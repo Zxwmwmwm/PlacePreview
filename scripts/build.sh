@@ -22,6 +22,7 @@ if command -v cmake >/dev/null 2>&1 && command -v ninja >/dev/null 2>&1; then
         -DFMT_INCLUDE_DIR="${FMT_INC}"
     cmake --build "${BUILD_DIR}" --target BuildGhost -j"$(nproc)"
     cp -f "${BUILD_DIR}/libBuildGhost.so" "${OUT_DIR}/libBuildGhost.so"
+    "${NDK_ROOT}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip" --strip-unneeded "${OUT_DIR}/libBuildGhost.so"
 else
     CXX="${NDK_ROOT}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android28-clang++"
     STRIP="${NDK_ROOT}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip"
