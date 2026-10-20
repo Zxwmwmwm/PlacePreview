@@ -1,0 +1,13 @@
+build/
+build-*/
+out/
+dist/
+artifacts/
+*.so
+*.o
+*.a
+*.levipack
+*.zip
+*.log
+.DS_Store
+compile_commands.json
