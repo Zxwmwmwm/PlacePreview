@@ -1,45 +1,37 @@
 #pragma once
 
-#include "buildghost/Config.hpp"
-#include "buildghost/Types.hpp"
-
-#include <atomic>
 #include <cstdint>
-#include <mutex>
-#include <string>
 
 namespace buildghost {
 
-struct LivePreviewTelemetry {
-    bool hookInstalled{false};
-    bool activePreview{false};
-    BlockPos targetPos{};
-    std::string targetBlockId;
-    OrientationKind orientationKind{OrientationKind::None};
-    Facing facing{Facing::North};
-    int pillarAxis{0};
-    bool topHalf{false};
-    bool isSlabMerge{false};
-    std::size_t subBoxCount{0};
-    uint64_t renderedFrames{0};
+struct ModConfig;
+struct GhostMeshOutput;
+
+struct BridgeStats {
+    bool hooksInstalled{false};
+    bool fastRvaResolved{false};
+    uint64_t framesEvaluated{0};
+    uint64_t framesRendered{0};
 };
 
 class EngineBridge {
 public:
     static EngineBridge& instance() noexcept;
 
-    [[nodiscard]] bool installHooks();
+    bool installHooks();
     void uninstallHooks();
+    void notifyConfigUpdated(const ModConfig& cfg) noexcept;
+    [[nodiscard]] BridgeStats stats() const noexcept;
 
-    void notifyConfigUpdated(const ModConfig& cfg);
-    [[nodiscard]] LivePreviewTelemetry telemetry() const;
+    // Non-owning world-space 16-byte PackedVertex swap pass shared by live gameplay & ASan tests.
+    static void flushMeshIntoDebugRenderer(
+        void* debugRenderer,
+        void* renderParams,
+        void (*origFn)(void*, void*),
+        const GhostMeshOutput& mesh) noexcept;
 
 private:
     EngineBridge() = default;
-
-    std::atomic<bool> installed_{false};
-    mutable std::mutex telemetryMutex_;
-    LivePreviewTelemetry telemetry_{};
 };
 
 } // namespace buildghost

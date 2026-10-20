@@ -55,7 +55,7 @@ public:
         const BlockPos& cellPos,
         const std::vector<AABB>& existingWorldBoxes);
 
-    // Deterministic 3D sub-box builders for multi-block Doors, Beds, Stairs, and Slabs.
+    // Deterministic 3D sub-box builders for multi-block Doors, Beds, Stairs, Walls/Fences, and Slabs.
     [[nodiscard]] static std::vector<AABB> buildDoorWorldBoxes(
         const BlockPos& lowerPos,
         Facing playerLookHorizontal,
@@ -64,6 +64,35 @@ public:
     [[nodiscard]] static std::vector<AABB> buildBedWorldBoxes(
         const BlockPos& footPos,
         Facing headDirection);
+
+    [[nodiscard]] static std::vector<AABB> buildStairWorldBoxes(
+        const BlockPos& pos,
+        Facing stairFacing,
+        bool topHalf,
+        bool hasFrontPerpStair,
+        Facing frontPerpFacing,
+        bool hasBackPerpStair,
+        Facing backPerpFacing);
+
+    [[nodiscard]] static bool isFenceOrWallOrPane(std::string_view id) noexcept;
+
+    [[nodiscard]] static std::vector<AABB> buildConnectedPostWorldBoxes(
+        const BlockPos& pos,
+        std::string_view blockIdentifier,
+        bool connectNorth,
+        bool connectSouth,
+        bool connectWest,
+        bool connectEast);
+
+    [[nodiscard]] static bool isNonSolidSupportBlock(std::string_view id) noexcept;
+
+    [[nodiscard]] static bool validateBlockSupport(
+        std::string_view blockIdentifier,
+        const BlockPos& placePos,
+        Facing hitFace,
+        std::string_view belowBlockId,
+        std::string_view aboveBlockId,
+        std::string_view behindFaceBlockId) noexcept;
 
     [[nodiscard]] static std::vector<AABB> buildFallbackBlockBoxes(
         const BlockPos& pos,

@@ -1,12 +1,15 @@
 #include "buildghost/Config.hpp"
+#include "buildghost/EngineBridge.hpp"
 #include "buildghost/GhostMesher.hpp"
 #include "buildghost/MaterialPalette.hpp"
 #include "buildghost/PlacementResolver.hpp"
+#include "buildghost/Signatures.hpp"
 #include "buildghost/StateInspector.hpp"
 #include "buildghost/Types.hpp"
 #include "buildghost/Version.hpp"
 
 #include <cmath>
+#include <cstddef>
 #include <cstdlib>
 #include <filesystem>
 #include <iostream>
@@ -448,6 +451,127 @@ void testConfigPersistenceAndVersionMetadata() {
     std::filesystem::remove_all(tmpDir);
 }
 
+void testNativeHardwareRegressionInvariants() {
+    // 1. Exact 16-byte PackedVertex ABI & world-space coordinates (no double cam subtraction!)
+    BG_EXPECT(sizeof(PackedVertex) == 16);
+    BG_EXPECT(offsetof(PackedVertex, x) == 0);
+    BG_EXPECT(offsetof(PackedVertex, y) == 4);
+    BG_EXPECT(offsetof(PackedVertex, z) == 8);
+    BG_EXPECT(offsetof(PackedVertex, abgr) == 12);
+
+    PlacementPreviewState preview{};
+    preview.valid = true;
+    preview.primaryPos = {1452, 80, -2893};
+    preview.blockIdentifier = "minecraft:oak_planks";
+    preview.materialColor = MaterialPalette::colorForBlock(preview.blockIdentifier, 0);
+    preview.worldBoxes = {AABB::unitAt(preview.primaryPos)};
+
+    ModConfig cfg{};
+    GhostMeshOutput mesh{};
+    const Vec3 farCamera{1450.5f, 81.62f, -2890.25f};
+    GhostMesher::buildMesh(preview, cfg, farCamera, 0.0f, mesh);
+
+    BG_EXPECT(!mesh.packedTriangles.empty());
+    BG_EXPECT(!mesh.packedLines.empty());
+    BG_EXPECT(mesh.packedTriangles.size() == mesh.triangles.size() * 3);
+    BG_EXPECT(mesh.packedLines.size() == mesh.lines.size() * 2);
+
+    for (const auto& v : mesh.packedTriangles) {
+        BG_EXPECT(v.x > 1451.8f && v.x < 1453.2f);
+        BG_EXPECT(v.y > 79.8f && v.y < 81.2f);
+        BG_EXPECT(v.z > -2893.2f && v.z < -2891.8f);
+    }
+    for (const auto& v : mesh.packedLines) {
+        BG_EXPECT(v.x > 1451.8f && v.x < 1453.2f);
+        BG_EXPECT(v.y > 79.8f && v.y < 81.2f);
+        BG_EXPECT(v.z > -2893.2f && v.z < -2891.8f);
+    }
+
+    // 2. Android 13 ARM64 Scudo Top-Byte-Ignore (0xB4...) pointer validation
+    const auto* scudoTagged = reinterpret_cast<const void*>(0xb40000714dc8a8d0ull);
+    const auto* scudoMisaligned = reinterpret_cast<const void*>(0xb40000714dc8a8d3ull);
+    const auto* lowNullPage = reinterpret_cast<const void*>(0x0000000000000028ull);
+    BG_EXPECT(sig::untagUserAddr(0xb40000714dc8a8d0ull) == 0x000000714dc8a8d0ull);
+    BG_EXPECT(sig::isValidUserAddress(scudoTagged, 8));
+    BG_EXPECT(!sig::isValidUserAddress(scudoMisaligned, 8));
+    BG_EXPECT(!sig::isValidUserAddress(nullptr, 1));
+    BG_EXPECT(!sig::isValidUserAddress(lowNullPage, 1));
+
+    // 3. Corner Stair multi-box morphing & Connected Wall/Fence arms & Support validation
+    const auto straight = StateInspector::buildStairWorldBoxes(
+        {0, 64, 0}, Facing::North, false, false, Facing::North, false, Facing::North);
+    const auto outerCorner = StateInspector::buildStairWorldBoxes(
+        {0, 64, 0}, Facing::North, false, true, Facing::East, false, Facing::North);
+    const auto innerCorner = StateInspector::buildStairWorldBoxes(
+        {0, 64, 0}, Facing::North, false, false, Facing::North, true, Facing::East);
+    BG_EXPECT(straight.size() == 2);
+    BG_EXPECT(outerCorner.size() == 2 && outerCorner[1].volume() < straight[1].volume());
+    BG_EXPECT(innerCorner.size() == 3);
+
+    const auto wallArms = StateInspector::buildConnectedPostWorldBoxes(
+        {0, 64, 0}, "minecraft:cobblestone_wall", true, false, true, false);
+    BG_EXPECT(wallArms.size() == 3);
+
+    // Ceiling torch (Facing::Down) rejected; upright floor torch accepted; hanging lantern accepted
+    BG_EXPECT(!StateInspector::validateBlockSupport(
+        "minecraft:torch", {0, 65, 0}, Facing::Down, "minecraft:air", "minecraft:stone", "minecraft:stone"));
+    BG_EXPECT(StateInspector::validateBlockSupport(
+        "minecraft:torch", {0, 65, 0}, Facing::Up, "minecraft:stone", "minecraft:air", "minecraft:stone"));
+    BG_EXPECT(StateInspector::validateBlockSupport(
+        "minecraft:lantern", {0, 65, 0}, Facing::Down, "minecraft:air", "minecraft:stone", "minecraft:stone"));
+    BG_EXPECT(!StateInspector::validateBlockSupport(
+        "minecraft:wheat", {0, 65, 0}, Facing::Up, "minecraft:stone", "minecraft:air", "minecraft:stone"));
+    BG_EXPECT(StateInspector::validateBlockSupport(
+        "minecraft:wheat", {0, 65, 0}, Facing::Up, "minecraft:farmland", "minecraft:air", "minecraft:farmland"));
+
+    // 4. Simulated DebugRenderer (+0x08 flag, +0x50 lineVec[3], +0x68 triVec[3]) non-owning swap
+    alignas(16) uint8_t fakeDebugRenderer[0x90]{};
+    alignas(16) uint8_t fakeRenderParams[0x40]{};
+    const PackedVertex sentinelLine{};
+    const PackedVertex sentinelTri{};
+    auto* lineSlots = reinterpret_cast<const PackedVertex**>(fakeDebugRenderer + sig::off::DebugRenderer_LineVec);
+    auto* triSlots  = reinterpret_cast<const PackedVertex**>(fakeDebugRenderer + sig::off::DebugRenderer_TriVec);
+    lineSlots[0] = &sentinelLine;
+    lineSlots[1] = &sentinelLine + 1;
+    lineSlots[2] = &sentinelLine + 1;
+    triSlots[0]  = &sentinelTri;
+    triSlots[1]  = &sentinelTri + 1;
+    triSlots[2]  = &sentinelTri + 1;
+
+    static std::size_t sCapturedTriVerts = 0;
+    static std::size_t sCapturedLineVerts = 0;
+    sCapturedTriVerts = 0;
+    sCapturedLineVerts = 0;
+
+    auto mockRenderEnd = [](void* dbg, void* /*rp*/) {
+        auto* bytes = static_cast<uint8_t*>(dbg);
+        const uint8_t flag = bytes[sig::off::DebugRenderer_ActiveFlag];
+        if (!flag) return;
+        bytes[sig::off::DebugRenderer_ActiveFlag] = 0u;
+        auto* lv = reinterpret_cast<const PackedVertex* const*>(bytes + sig::off::DebugRenderer_LineVec);
+        auto* tv = reinterpret_cast<const PackedVertex* const*>(bytes + sig::off::DebugRenderer_TriVec);
+        if (tv[0] && tv[1] > tv[0]) {
+            sCapturedTriVerts += static_cast<std::size_t>(tv[1] - tv[0]);
+        }
+        if (lv[0] && lv[1] > lv[0]) {
+            sCapturedLineVerts += static_cast<std::size_t>(lv[1] - lv[0]);
+        }
+    };
+
+    EngineBridge::flushMeshIntoDebugRenderer(fakeDebugRenderer, fakeRenderParams, mockRenderEnd, mesh);
+    BG_EXPECT(sCapturedTriVerts == mesh.packedTriangles.size());
+    BG_EXPECT(sCapturedLineVerts == mesh.packedLines.size());
+    BG_EXPECT(fakeDebugRenderer[sig::off::DebugRenderer_ActiveFlag] == 0u);
+    BG_EXPECT(lineSlots[0] == &sentinelLine && lineSlots[1] == &sentinelLine + 1 && lineSlots[2] == &sentinelLine + 1);
+    BG_EXPECT(triSlots[0] == &sentinelTri && triSlots[1] == &sentinelTri + 1 && triSlots[2] == &sentinelTri + 1);
+
+    // Host lifecycle sanity check
+    BG_EXPECT(EngineBridge::instance().installHooks());
+    BG_EXPECT(EngineBridge::instance().stats().hooksInstalled);
+    EngineBridge::instance().uninstallHooks();
+    BG_EXPECT(!EngineBridge::instance().stats().hooksInstalled);
+}
+
 } // namespace
 
 int main() {
@@ -455,6 +579,7 @@ int main() {
     testImmediateTargetPositionAndReplaceableUpdates();
     testOrientationsSlabsStairsPillarsDoorsBeds();
     testConfigPersistenceAndVersionMetadata();
+    testNativeHardwareRegressionInvariants();
 
     if (gFailures > 0) {
         std::cerr << "BuildGhost test suite failed with " << gFailures << " error(s)." << std::endl;

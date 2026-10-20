@@ -150,7 +150,20 @@ struct RgbaColor {
 };
 
 // Verified against Minecraft Bedrock 1.26.52.03 DebugRenderer::renderEnd (0x0b25de34):
-// Line stride = 36 bytes (mLineVertices at DebugRenderer + 0x50).
+// BOTH mLineVertices (+0x50, LineList mode=4, 2 vertices/line) AND mTriangleVertices (+0x68,
+// TriangleList mode=2, 3 vertices/triangle) use 16-byte world-space PackedVertex elements
+// (`lsr x3, x8, #4`, `add x23, x23, #0x10`), and renderEnd itself applies
+// Tessellator::setOffset(-camPos.x, -camPos.y, -camPos.z).
+struct PackedVertex {
+    float x{0.0f};
+    float y{0.0f};
+    float z{0.0f};
+    uint32_t abgr{0};
+};
+static_assert(sizeof(PackedVertex) == 16, "PackedVertex ABI must match 16-byte stride in DebugRenderer");
+
+// Host-side logical line segment & triangle descriptors (retained for deterministic geometry
+// inspection & unit tests alongside world-space PackedVertex submission buffers).
 struct DebugLineVertex {
     float x1{0.0f};
     float y1{0.0f};
@@ -162,9 +175,8 @@ struct DebugLineVertex {
     uint32_t color2{0};
     uint32_t flags{0};
 };
-static_assert(sizeof(DebugLineVertex) == 36, "DebugLineVertex ABI must match 36-byte stride");
+static_assert(sizeof(DebugLineVertex) == 36, "DebugLineVertex descriptor size");
 
-// Triangle stride = 52 bytes (mTriangleVertices at DebugRenderer + 0x68).
 struct DebugTriangleVertex {
     float x1{0.0f};
     float y1{0.0f};
@@ -180,7 +192,7 @@ struct DebugTriangleVertex {
     uint32_t color3{0};
     uint32_t flags{0};
 };
-static_assert(sizeof(DebugTriangleVertex) == 52, "DebugTriangleVertex ABI must match 52-byte stride");
+static_assert(sizeof(DebugTriangleVertex) == 52, "DebugTriangleVertex descriptor size");
 
 // Exact Minecraft Bedrock Facing::Name enum values (0..5):
 enum class Facing : uint8_t {

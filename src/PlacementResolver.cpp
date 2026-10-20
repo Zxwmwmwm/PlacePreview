@@ -229,6 +229,23 @@ PlacementPreviewState tryResolveSingleHand(
         return invalid;
     }
 
+    // Enforce attachment/substrate support rules (Torches on ceiling, floating Lanterns/Ladders/Carpets, Crops).
+    {
+        const BlockPos belowPos = placePos.offset(0, -1, 0);
+        const BlockPos abovePos = placePos.offset(0, 1, 0);
+        const BlockPos oppStep = facingStep(oppositeFacing(resolvedFace));
+        const BlockPos behindPos = placePos.offset(oppStep.x, oppStep.y, oppStep.z);
+        if (!StateInspector::validateBlockSupport(
+                initialBlockId,
+                placePos,
+                resolvedFace,
+                world.getBlockIdentifier(belowPos),
+                world.getBlockIdentifier(abovePos),
+                world.getBlockIdentifier(behindPos))) {
+            return invalid;
+        }
+    }
+
     // Compute [0..1]^3 sub-block click coordinates exactly as BlockItem::_useOn passes to getPlacementBlock!
     const Vec3 subClick = computeSubClickOffset(placePos, hitWorldPos, resolvedFace);
 
@@ -250,7 +267,28 @@ PlacementPreviewState tryResolveSingleHand(
         ctx.yawDeg);
 
     if (!gotNativePlacement || worldBoxes.empty()) {
-        worldBoxes = StateInspector::buildFallbackBlockBoxes(placePos, initialBlockId, orient);
+        const std::string effectiveId = finalBlockId.empty() ? initialBlockId : finalBlockId;
+        if (StateInspector::isFenceOrWallOrPane(effectiveId)) {
+            auto connectsTo = [&](const BlockPos& np) -> bool {
+                const std::string nid = world.getBlockIdentifier(np);
+                if (nid.empty()) return false;
+                if (StateInspector::isFenceOrWallOrPane(nid)) return true;
+                return !StateInspector::isNonSolidSupportBlock(nid) &&
+                       !StateInspector::isSlabBlock(nid) &&
+                       !StateInspector::isStairBlock(nid) &&
+                       !StateInspector::isDoorBlock(nid) &&
+                       !StateInspector::isBedBlock(nid);
+            };
+            worldBoxes = StateInspector::buildConnectedPostWorldBoxes(
+                placePos,
+                effectiveId,
+                connectsTo(placePos.offset(0, 0, -1)),
+                connectsTo(placePos.offset(0, 0,  1)),
+                connectsTo(placePos.offset(-1, 0, 0)),
+                connectsTo(placePos.offset(1, 0,  0)));
+        } else {
+            worldBoxes = StateInspector::buildFallbackBlockBoxes(placePos, effectiveId, orient);
+        }
     }
 
     // If merging a matching single half-slab into an existing half-slab, isolate ONLY the newly added half!

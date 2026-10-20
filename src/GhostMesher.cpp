@@ -56,6 +56,13 @@ void subtractRect2D(const Rect2D& src, const Rect2D& clip, std::vector<Rect2D>& 
     }
 }
 
+uint32_t scalePackedAbgrAlpha(uint32_t abgr, float alphaFactor) noexcept {
+    const uint32_t rgb = abgr & 0x00FFFFFFu;
+    const float a = static_cast<float>((abgr >> 24u) & 0xFFu) * alphaFactor;
+    const uint32_t newA = static_cast<uint32_t>(std::clamp(std::lround(a), 0L, 255L));
+    return rgb | (newA << 24u);
+}
+
 void pushLine(
     GhostMeshOutput& out,
     const Vec3& camPos,
@@ -63,6 +70,11 @@ void pushLine(
     const Vec3& bWorld,
     uint32_t abgr) {
 
+    // 1. Exact world-space 16-byte PackedVertex pair for DebugRenderer::renderEnd (+0x50, mode=4).
+    out.packedLines.push_back(PackedVertex{aWorld.x, aWorld.y, aWorld.z, abgr});
+    out.packedLines.push_back(PackedVertex{bWorld.x, bWorld.y, bWorld.z, abgr});
+
+    // 2. Host inspection descriptor.
     const Vec3 a = aWorld - camPos;
     const Vec3 b = bWorld - camPos;
     out.lines.push_back(DebugLineVertex{
@@ -81,12 +93,51 @@ void pushQuadTwoSided(
     const Vec3& p3World,
     uint32_t abgr) {
 
+    // Compute unit normal of (p1 - p0) x (p2 - p0) so interior reverse-wound faces are inset
+    // slightly (0.0014m) with softer depth alpha — guaranteeing ZERO coplanar Z-fighting whether
+    // the active material culls backfaces or renders double-sided!
+    const Vec3 e1 = p1World - p0World;
+    const Vec3 e2 = p2World - p0World;
+    Vec3 nrm{
+        e1.y * e2.z - e1.z * e2.y,
+        e1.z * e2.x - e1.x * e2.z,
+        e1.x * e2.y - e1.y * e2.x
+    };
+    const float nLen = nrm.length();
+    const Vec3 inset = (nLen > 1e-6f) ? (nrm * (-0.0014f / nLen)) : Vec3{};
+    const Vec3 b0World = p0World + inset;
+    const Vec3 b1World = p1World + inset;
+    const Vec3 b2World = p2World + inset;
+    const Vec3 b3World = p3World + inset;
+    const uint32_t backAbgr = scalePackedAbgrAlpha(abgr, 0.45f);
+
+    // World-space 16-byte PackedVertex triangles for DebugRenderer::renderEnd (+0x68, mode=2):
+    out.packedTriangles.push_back(PackedVertex{p0World.x, p0World.y, p0World.z, abgr});
+    out.packedTriangles.push_back(PackedVertex{p1World.x, p1World.y, p1World.z, abgr});
+    out.packedTriangles.push_back(PackedVertex{p2World.x, p2World.y, p2World.z, abgr});
+
+    out.packedTriangles.push_back(PackedVertex{p0World.x, p0World.y, p0World.z, abgr});
+    out.packedTriangles.push_back(PackedVertex{p2World.x, p2World.y, p2World.z, abgr});
+    out.packedTriangles.push_back(PackedVertex{p3World.x, p3World.y, p3World.z, abgr});
+
+    out.packedTriangles.push_back(PackedVertex{b0World.x, b0World.y, b0World.z, backAbgr});
+    out.packedTriangles.push_back(PackedVertex{b2World.x, b2World.y, b2World.z, backAbgr});
+    out.packedTriangles.push_back(PackedVertex{b1World.x, b1World.y, b1World.z, backAbgr});
+
+    out.packedTriangles.push_back(PackedVertex{b0World.x, b0World.y, b0World.z, backAbgr});
+    out.packedTriangles.push_back(PackedVertex{b3World.x, b3World.y, b3World.z, backAbgr});
+    out.packedTriangles.push_back(PackedVertex{b2World.x, b2World.y, b2World.z, backAbgr});
+
+    // Host camera-relative descriptors:
     const Vec3 p0 = p0World - camPos;
     const Vec3 p1 = p1World - camPos;
     const Vec3 p2 = p2World - camPos;
     const Vec3 p3 = p3World - camPos;
+    const Vec3 b0 = b0World - camPos;
+    const Vec3 b1 = b1World - camPos;
+    const Vec3 b2 = b2World - camPos;
+    const Vec3 b3 = b3World - camPos;
 
-    // Front winding (CCW)
     out.triangles.push_back(DebugTriangleVertex{
         p0.x, p0.y, p0.z, abgr,
         p1.x, p1.y, p1.z, abgr,
@@ -99,19 +150,16 @@ void pushQuadTwoSided(
         p3.x, p3.y, p3.z, abgr,
         0u
     });
-
-    // Back winding (ensures visible translucent back walls regardless of backface culling mode)
-    const uint32_t backAbgr = abgr;
     out.triangles.push_back(DebugTriangleVertex{
-        p0.x, p0.y, p0.z, backAbgr,
-        p2.x, p2.y, p2.z, backAbgr,
-        p1.x, p1.y, p1.z, backAbgr,
+        b0.x, b0.y, b0.z, backAbgr,
+        b2.x, b2.y, b2.z, backAbgr,
+        b1.x, b1.y, b1.z, backAbgr,
         0u
     });
     out.triangles.push_back(DebugTriangleVertex{
-        p0.x, p0.y, p0.z, backAbgr,
-        p3.x, p3.y, p3.z, backAbgr,
-        p2.x, p2.y, p2.z, backAbgr,
+        b0.x, b0.y, b0.z, backAbgr,
+        b3.x, b3.y, b3.z, backAbgr,
+        b2.x, b2.y, b2.z, backAbgr,
         0u
     });
 }
@@ -124,6 +172,16 @@ void pushTriTwoSided(
     const Vec3& p2World,
     uint32_t abgr) {
 
+    const uint32_t backAbgr = scalePackedAbgrAlpha(abgr, 0.55f);
+
+    out.packedTriangles.push_back(PackedVertex{p0World.x, p0World.y, p0World.z, abgr});
+    out.packedTriangles.push_back(PackedVertex{p1World.x, p1World.y, p1World.z, abgr});
+    out.packedTriangles.push_back(PackedVertex{p2World.x, p2World.y, p2World.z, abgr});
+
+    out.packedTriangles.push_back(PackedVertex{p0World.x, p0World.y, p0World.z, backAbgr});
+    out.packedTriangles.push_back(PackedVertex{p2World.x, p2World.y, p2World.z, backAbgr});
+    out.packedTriangles.push_back(PackedVertex{p1World.x, p1World.y, p1World.z, backAbgr});
+
     const Vec3 p0 = p0World - camPos;
     const Vec3 p1 = p1World - camPos;
     const Vec3 p2 = p2World - camPos;
@@ -135,9 +193,9 @@ void pushTriTwoSided(
         0u
     });
     out.triangles.push_back(DebugTriangleVertex{
-        p0.x, p0.y, p0.z, abgr,
-        p2.x, p2.y, p2.z, abgr,
-        p1.x, p1.y, p1.z, abgr,
+        p0.x, p0.y, p0.z, backAbgr,
+        p2.x, p2.y, p2.z, backAbgr,
+        p1.x, p1.y, p1.z, backAbgr,
         0u
     });
 }
@@ -195,21 +253,36 @@ void emitFaceRectQuad(
 
     switch (f) {
         case Facing::Up:
+            c0 = Vec3{r.u0, plane, r.v0} + n;
+            c1 = Vec3{r.u0, plane, r.v1} + n;
+            c2 = Vec3{r.u1, plane, r.v1} + n;
+            c3 = Vec3{r.u1, plane, r.v0} + n;
+            break;
         case Facing::Down:
             c0 = Vec3{r.u0, plane, r.v0} + n;
             c1 = Vec3{r.u1, plane, r.v0} + n;
             c2 = Vec3{r.u1, plane, r.v1} + n;
             c3 = Vec3{r.u0, plane, r.v1} + n;
             break;
-        case Facing::North:
         case Facing::South:
             c0 = Vec3{r.u0, r.v0, plane} + n;
             c1 = Vec3{r.u1, r.v0, plane} + n;
             c2 = Vec3{r.u1, r.v1, plane} + n;
             c3 = Vec3{r.u0, r.v1, plane} + n;
             break;
-        case Facing::West:
+        case Facing::North:
+            c0 = Vec3{r.u0, r.v1, plane} + n;
+            c1 = Vec3{r.u1, r.v1, plane} + n;
+            c2 = Vec3{r.u1, r.v0, plane} + n;
+            c3 = Vec3{r.u0, r.v0, plane} + n;
+            break;
         case Facing::East:
+            c0 = Vec3{plane, r.v0, r.u1} + n;
+            c1 = Vec3{plane, r.v0, r.u0} + n;
+            c2 = Vec3{plane, r.v1, r.u0} + n;
+            c3 = Vec3{plane, r.v1, r.u1} + n;
+            break;
+        case Facing::West:
             c0 = Vec3{plane, r.v0, r.u0} + n;
             c1 = Vec3{plane, r.v0, r.u1} + n;
             c2 = Vec3{plane, r.v1, r.u1} + n;
@@ -463,6 +536,8 @@ void GhostMesher::buildMesh(
     // Reserve approximate vertex capacity up front to avoid reallocations on the Render Thread.
     outMesh.triangles.reserve(preview.worldBoxes.size() * 28);
     outMesh.lines.reserve(preview.worldBoxes.size() * 32 + 32);
+    outMesh.packedTriangles.reserve(preview.worldBoxes.size() * 84);
+    outMesh.packedLines.reserve(preview.worldBoxes.size() * 64 + 64);
 
     // 1. Emit coplanar-culled exterior surfaces & crisp edges across ALL world sub-boxes!
     for (std::size_t i = 0; i < preview.worldBoxes.size(); ++i) {

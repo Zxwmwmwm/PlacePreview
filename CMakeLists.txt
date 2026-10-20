@@ -11,6 +11,7 @@ set(BUILD_GHOST_CORE_SOURCES
     src/StateInspector.cpp
     src/PlacementResolver.cpp
     src/GhostMesher.cpp
+    src/EngineBridge.cpp
 )
 
 if(ANDROID)
@@ -46,7 +47,6 @@ if(ANDROID)
 
     add_library(BuildGhost SHARED
         ${BUILD_GHOST_CORE_SOURCES}
-        src/EngineBridge.cpp
         src/ModMenuUi.cpp
         src/main.cpp
     )
@@ -90,6 +90,7 @@ if(ANDROID)
         c
     )
 else()
+    find_package(Threads REQUIRED)
     enable_testing()
     add_executable(test_build_ghost
         ${BUILD_GHOST_CORE_SOURCES}
@@ -105,5 +106,6 @@ else()
         -Wextra
         -Werror
     )
+    target_link_libraries(test_build_ghost PRIVATE Threads::Threads)
     add_test(NAME BuildGhostUnitSuite COMMAND test_build_ghost)
 endif()
