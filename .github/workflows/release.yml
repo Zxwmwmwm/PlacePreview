@@ -1,0 +1,102 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to build and publish (e.g. v1.0.0)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build & Publish GitHub Release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify release tag matches metadata
+        env:
+          INPUT_TAG: ${{ github.event.inputs.tag }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          python3 - <<'PY'
+          import json, os, sys
+          from pathlib import Path
+          sys.path.insert(0, "scripts")
+          from package_levipack import parse_version_header
+
+          raw_tag = os.environ.get("INPUT_TAG") or os.environ["REF_NAME"]
+          expected_ver = raw_tag.lstrip("v")
+
+          hdr = parse_version_header(Path("include/buildghost/Version.hpp"))
+          manifest = json.loads(Path("manifest.json").read_text(encoding="utf-8"))
+          levimod = json.loads(Path("levimod.json").read_text(encoding="utf-8"))
+
+          assert hdr["Version"] == expected_ver, f"Version.hpp={hdr['Version']} != tag {expected_ver}"
+          assert manifest["version"] == expected_ver, f"manifest.json={manifest['version']} != tag {expected_ver}"
+          assert levimod["version"] == expected_ver, f"levimod.json={levimod['version']} != tag {expected_ver}"
+          assert manifest["author"] == "Zxwmwmwm", f"Unexpected author {manifest['author']}"
+          assert levimod["author"] == "Zxwmwmwm", f"Unexpected author {levimod['author']}"
+          print(f"Verified version {expected_ver} across Version.hpp, manifest.json, and levimod.json")
+          PY
+
+      - name: Install Ninja & Build Tools
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ninja-build binutils
+
+      - name: Run C++20 Host Unit & Integration Suite (ASan + UBSan)
+        run: |
+          cmake -S . -B /tmp/bg-host-test -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer"
+          cmake --build /tmp/bg-host-test -j"$(nproc)"
+          ctest --test-dir /tmp/bg-host-test --output-on-failure
+
+      - name: Setup Android NDK r29
+        uses: nttld/setup-ndk@v1
+        id: ndk
+        with:
+          ndk-version: r29
+          add-to-path: false
+
+      - name: Build Preloader Android SDK (arm64-v8a)
+        env:
+          ANDROID_NDK_HOME: ${{ steps.ndk.outputs.ndk-path }}
+        run: |
+          git clone --depth 1 https://github.com/LiteLDev/preloader-android.git /tmp/preloader-android
+          git clone --depth 1 --branch 11.2.0 https://github.com/fmtlib/fmt.git /tmp/fmt-11.2.0
+          cmake -S /tmp/preloader-android -B /tmp/preloader-android/build -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE="${ANDROID_NDK_HOME}/build/cmake/android.toolchain.cmake" \
+            -DANDROID_ABI=arm64-v8a \
+            -DANDROID_PLATFORM=android-28 \
+            -DCMAKE_BUILD_TYPE=Release
+          cmake --build /tmp/preloader-android/build --target preloader -j"$(nproc)"
+
+      - name: Build BuildGhost & Package Release Assets
+        env:
+          ANDROID_NDK_HOME: ${{ steps.ndk.outputs.ndk-path }}
+          PRELOADER_INCLUDE_DIR: /tmp/preloader-android/include
+          PRELOADER_LIBRARY: /tmp/preloader-android/build/libpreloader.so
+          FMT_INCLUDE_DIR: /tmp/fmt-11.2.0/include
+        run: |
+          bash ./scripts/build.sh
+          ls -lh artifacts/BuildGhost.levipack artifacts/libBuildGhost.so
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          name: BuildGhost ${{ github.event.inputs.tag || github.ref_name }}
+          files: |
+            artifacts/BuildGhost.levipack
+            artifacts/libBuildGhost.so
+          generate_release_notes: true

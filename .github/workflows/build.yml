@@ -1,0 +1,69 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Test & Build arm64-v8a LeviPack
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Ninja & Build Tools
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ninja-build binutils
+
+      - name: Run C++20 Host Unit & Integration Suite (ASan + UBSan)
+        run: |
+          cmake -S . -B /tmp/bg-host-test -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer"
+          cmake --build /tmp/bg-host-test -j"$(nproc)"
+          ctest --test-dir /tmp/bg-host-test --output-on-failure
+
+      - name: Setup Android NDK r29
+        uses: nttld/setup-ndk@v1
+        id: ndk
+        with:
+          ndk-version: r29
+          add-to-path: false
+
+      - name: Build Preloader Android SDK (arm64-v8a)
+        env:
+          ANDROID_NDK_HOME: ${{ steps.ndk.outputs.ndk-path }}
+        run: |
+          git clone --depth 1 https://github.com/LiteLDev/preloader-android.git /tmp/preloader-android
+          git clone --depth 1 --branch 11.2.0 https://github.com/fmtlib/fmt.git /tmp/fmt-11.2.0
+          cmake -S /tmp/preloader-android -B /tmp/preloader-android/build -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE="${ANDROID_NDK_HOME}/build/cmake/android.toolchain.cmake" \
+            -DANDROID_ABI=arm64-v8a \
+            -DANDROID_PLATFORM=android-28 \
+            -DCMAKE_BUILD_TYPE=Release
+          cmake --build /tmp/preloader-android/build --target preloader -j"$(nproc)"
+
+      - name: Build BuildGhost & Package LeviPack
+        env:
+          ANDROID_NDK_HOME: ${{ steps.ndk.outputs.ndk-path }}
+          PRELOADER_INCLUDE_DIR: /tmp/preloader-android/include
+          PRELOADER_LIBRARY: /tmp/preloader-android/build/libpreloader.so
+          FMT_INCLUDE_DIR: /tmp/fmt-11.2.0/include
+        run: |
+          bash ./scripts/build.sh
+          ls -lh artifacts/BuildGhost.levipack artifacts/libBuildGhost.so
+
+      - name: Upload Build Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: BuildGhost-arm64-v8a
+          path: |
+            artifacts/BuildGhost.levipack
+            artifacts/libBuildGhost.so
+          if-no-files-found: error
