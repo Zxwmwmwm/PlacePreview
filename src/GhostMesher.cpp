@@ -1,11 +1,11 @@
-#include "buildghost/GhostMesher.hpp"
+#include "placepreview/GhostMesher.hpp"
 
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <vector>
 
-namespace buildghost {
+namespace placepreview {
 
 namespace {
 
@@ -24,9 +24,6 @@ struct Rect2D {
     }
 };
 
-// Subtracts `clip` from `src` in 2D, appending up to 4 non-overlapping remainder rectangles.
-// Eliminates internal coplanar faces between touching multi-box sub-volumes (Stairs, Corner
-// Stairs, Walls, Fences, Hoppers, Beds) so translucent faces NEVER double-blend at internal seams!
 void subtractRect2D(const Rect2D& src, const Rect2D& clip, std::vector<Rect2D>& out) {
     const float iu0 = std::max(src.u0, clip.u0);
     const float iv0 = std::max(src.v0, clip.v0);
@@ -38,19 +35,15 @@ void subtractRect2D(const Rect2D& src, const Rect2D& clip, std::vector<Rect2D>& 
         return;
     }
 
-    // Left strip
     if (iu0 - src.u0 > 1e-4f) {
         out.push_back({src.u0, src.v0, iu0, src.v1});
     }
-    // Right strip
     if (src.u1 - iu1 > 1e-4f) {
         out.push_back({iu1, src.v0, src.u1, src.v1});
     }
-    // Bottom middle strip
     if (iv0 - src.v0 > 1e-4f) {
         out.push_back({iu0, src.v0, iu1, iv0});
     }
-    // Top middle strip
     if (src.v1 - iv1 > 1e-4f) {
         out.push_back({iu0, iv1, iu1, src.v1});
     }
@@ -70,11 +63,9 @@ void pushLine(
     const Vec3& bWorld,
     uint32_t abgr) {
 
-    // 1. Exact world-space 16-byte PackedVertex pair for DebugRenderer::renderEnd (+0x50, mode=4).
     out.packedLines.push_back(PackedVertex{aWorld.x, aWorld.y, aWorld.z, abgr});
     out.packedLines.push_back(PackedVertex{bWorld.x, bWorld.y, bWorld.z, abgr});
 
-    // 2. Host inspection descriptor.
     const Vec3 a = aWorld - camPos;
     const Vec3 b = bWorld - camPos;
     out.lines.push_back(DebugLineVertex{
@@ -93,16 +84,6 @@ void pushQuadTwoSided(
     const Vec3& p3World,
     uint32_t abgr) {
 
-    // Compute unit normal of (p1 - p0) x (p2 - p0) so interior reverse-wound faces are inset
-    // slightly (0.0014m) with softer depth alpha — guaranteeing ZERO coplanar Z-fighting whether
-    // the active material culls backfaces or renders double-sided!
-    const Vec3 b0World = p0World;
-    const Vec3 b1World = p1World;
-    const Vec3 b2World = p2World;
-    const Vec3 b3World = p3World;
-    const uint32_t backAbgr = abgr;
-
-    // World-space 16-byte PackedVertex triangles for DebugRenderer::renderEnd (+0x68, mode=2):
     out.packedTriangles.push_back(PackedVertex{p0World.x, p0World.y, p0World.z, abgr});
     out.packedTriangles.push_back(PackedVertex{p1World.x, p1World.y, p1World.z, abgr});
     out.packedTriangles.push_back(PackedVertex{p2World.x, p2World.y, p2World.z, abgr});
@@ -111,23 +92,18 @@ void pushQuadTwoSided(
     out.packedTriangles.push_back(PackedVertex{p2World.x, p2World.y, p2World.z, abgr});
     out.packedTriangles.push_back(PackedVertex{p3World.x, p3World.y, p3World.z, abgr});
 
-    out.packedTriangles.push_back(PackedVertex{b0World.x, b0World.y, b0World.z, backAbgr});
-    out.packedTriangles.push_back(PackedVertex{b2World.x, b2World.y, b2World.z, backAbgr});
-    out.packedTriangles.push_back(PackedVertex{b1World.x, b1World.y, b1World.z, backAbgr});
+    out.packedTriangles.push_back(PackedVertex{p0World.x, p0World.y, p0World.z, abgr});
+    out.packedTriangles.push_back(PackedVertex{p2World.x, p2World.y, p2World.z, abgr});
+    out.packedTriangles.push_back(PackedVertex{p1World.x, p1World.y, p1World.z, abgr});
 
-    out.packedTriangles.push_back(PackedVertex{b0World.x, b0World.y, b0World.z, backAbgr});
-    out.packedTriangles.push_back(PackedVertex{b3World.x, b3World.y, b3World.z, backAbgr});
-    out.packedTriangles.push_back(PackedVertex{b2World.x, b2World.y, b2World.z, backAbgr});
+    out.packedTriangles.push_back(PackedVertex{p0World.x, p0World.y, p0World.z, abgr});
+    out.packedTriangles.push_back(PackedVertex{p3World.x, p3World.y, p3World.z, abgr});
+    out.packedTriangles.push_back(PackedVertex{p2World.x, p2World.y, p2World.z, abgr});
 
-    // Host camera-relative descriptors:
     const Vec3 p0 = p0World - camPos;
     const Vec3 p1 = p1World - camPos;
     const Vec3 p2 = p2World - camPos;
     const Vec3 p3 = p3World - camPos;
-    const Vec3 b0 = b0World - camPos;
-    const Vec3 b1 = b1World - camPos;
-    const Vec3 b2 = b2World - camPos;
-    const Vec3 b3 = b3World - camPos;
 
     out.triangles.push_back(DebugTriangleVertex{
         p0.x, p0.y, p0.z, abgr,
@@ -142,15 +118,15 @@ void pushQuadTwoSided(
         0u
     });
     out.triangles.push_back(DebugTriangleVertex{
-        b0.x, b0.y, b0.z, backAbgr,
-        b2.x, b2.y, b2.z, backAbgr,
-        b1.x, b1.y, b1.z, backAbgr,
+        p0.x, p0.y, p0.z, abgr,
+        p2.x, p2.y, p2.z, abgr,
+        p1.x, p1.y, p1.z, abgr,
         0u
     });
     out.triangles.push_back(DebugTriangleVertex{
-        b0.x, b0.y, b0.z, backAbgr,
-        b3.x, b3.y, b3.z, backAbgr,
-        b2.x, b2.y, b2.z, backAbgr,
+        p0.x, p0.y, p0.z, abgr,
+        p3.x, p3.y, p3.z, abgr,
+        p2.x, p2.y, p2.z, abgr,
         0u
     });
 }
@@ -265,6 +241,100 @@ float faceLightFactor(Facing f, bool directionalShading) noexcept {
     return 1.0f;
 }
 
+float normalLightFactor(const Vec3& worldNormal, bool directionalShading) noexcept {
+    if (!directionalShading) return 1.0f;
+    // Matches vanilla Minecraft directional lighting cleanly across any 3D angle:
+    // +Y = 1.00, +/-Z = 0.86, +/-X = 0.73, -Y = 0.60.
+    const float ny = worldNormal.y;
+    const float horizontal = (ny >= 0.0f)
+                                 ? (0.86f * worldNormal.z * worldNormal.z +
+                                    0.73f * worldNormal.x * worldNormal.x +
+                                    1.00f * ny * ny)
+                                 : (0.86f * worldNormal.z * worldNormal.z +
+                                    0.73f * worldNormal.x * worldNormal.x +
+                                    0.60f * ny * ny);
+    return std::clamp(horizontal, 0.58f, 1.0f);
+}
+
+void emitOrientedBox(
+    GhostMeshOutput& out,
+    const Vec3& camPos,
+    std::vector<EmittedEdge>& emittedEdges,
+    const OrientedBox& obb,
+    const RgbaColor& baseRgb,
+    float fillAlpha,
+    float wireAlpha,
+    bool directionalShading,
+    bool emitFill,
+    bool emitWire) {
+
+    if (obb.isDegenerate()) {
+        return;
+    }
+
+    const Vec3 U = obb.axisU * (obb.halfExtents.x + kSurfaceExpand);
+    const Vec3 V = obb.axisV * (obb.halfExtents.y + kSurfaceExpand);
+    const Vec3 W = obb.axisW * (obb.halfExtents.z + kSurfaceExpand);
+    const Vec3 C = obb.center;
+
+    struct ObbFaceDesc {
+        Vec3 normal;
+        Vec3 c0;
+        Vec3 c1;
+        Vec3 c2;
+        Vec3 c3;
+    };
+
+    // All 6 faces wound right-handed so (c1 - c0) x (c2 - c0) points along `normal`:
+    const std::array<ObbFaceDesc, 6> faces{{
+        // +V (top)
+        {obb.axisV,          C - U + V - W, C - U + V + W, C + U + V + W, C + U + V - W},
+        // -V (bottom)
+        {obb.axisV * -1.0f,  C - U - V - W, C + U - V - W, C + U - V + W, C - U - V + W},
+        // +W (back)
+        {obb.axisW,          C - U - V + W, C + U - V + W, C + U + V + W, C - U + V + W},
+        // -W (front — faces player on 16-angle signs/banners/skulls!)
+        {obb.axisW * -1.0f,  C - U + V - W, C + U + V - W, C + U - V - W, C - U - V - W},
+        // +U (right)
+        {obb.axisU,          C + U - V + W, C + U - V - W, C + U + V - W, C + U + V + W},
+        // -U (left)
+        {obb.axisU * -1.0f,  C - U - V - W, C - U - V + W, C - U + V + W, C - U + V - W}
+    }};
+
+    bool anyCameraFacing = false;
+    std::array<bool, 6> vis{};
+    for (std::size_t i = 0; i < 6; ++i) {
+        const Vec3 faceCenter = (faces[i].c0 + faces[i].c2) * 0.5f;
+        vis[i] = ((camPos - faceCenter).dot(faces[i].normal) > -1e-3f);
+        if (vis[i]) {
+            anyCameraFacing = true;
+        }
+    }
+
+    for (std::size_t i = 0; i < 6; ++i) {
+        if (anyCameraFacing && !vis[i]) {
+            continue;
+        }
+        const float light = normalLightFactor(faces[i].normal, directionalShading);
+        const RgbaColor litBase = baseRgb.shaded(light);
+        const uint32_t fillAbgr = RgbaColor::withFloatAlpha(
+            litBase.r, litBase.g, litBase.b, fillAlpha).packAbgr();
+        const RgbaColor brightEdge = baseRgb.shaded(std::min(1.0f, light + 0.14f));
+        const uint32_t wireAbgr = RgbaColor::withFloatAlpha(
+            brightEdge.r, brightEdge.g, brightEdge.b, wireAlpha).packAbgr();
+
+        if (emitFill) {
+            pushQuadTwoSided(out, camPos, faces[i].c0, faces[i].c1, faces[i].c2, faces[i].c3, fillAbgr);
+        }
+        if (emitWire) {
+            pushLineDedup(out, camPos, emittedEdges, faces[i].c0, faces[i].c1, wireAbgr);
+            pushLineDedup(out, camPos, emittedEdges, faces[i].c1, faces[i].c2, wireAbgr);
+            pushLineDedup(out, camPos, emittedEdges, faces[i].c2, faces[i].c3, wireAbgr);
+            pushLineDedup(out, camPos, emittedEdges, faces[i].c3, faces[i].c0, wireAbgr);
+        }
+    }
+}
+
 void emitFaceRectQuad(
     GhostMeshOutput& out,
     const Vec3& camPos,
@@ -343,7 +413,6 @@ AABB computeUnionBounds(const std::vector<AABB>& boxes) noexcept {
     return u;
 }
 
-// Converts normalized [0..1] face UV coordinates on face `f` of `bounds` into 3D world space.
 Vec3 facePointUV(const AABB& bounds, Facing f, float u, float v, float lift = kGuideLift) noexcept {
     const Vec3 n = facingNormal(f) * lift;
     switch (f) {
@@ -363,7 +432,6 @@ Vec3 facePointUV(const AABB& bounds, Facing f, float u, float v, float lift = kG
     return bounds.center();
 }
 
-// Draws concentric annual rings on the two cut end-caps + longitudinal bark grain lines on the 4 bark sides!
 void emitPillarOrientationGuides(
     GhostMeshOutput& out,
     const Vec3& camPos,
@@ -377,13 +445,12 @@ void emitPillarOrientationGuides(
       : (pillarAxis == 1) ? std::array<Facing, 2>{Facing::East, Facing::West}
                           : std::array<Facing, 2>{Facing::South, Facing::North};
 
-    // 1. Concentric octagonal end-grain rings on both cut ends.
     for (Facing cap : endCaps) {
         for (float radius : {0.34f, 0.17f}) {
             constexpr int kSegs = 8;
             for (int s = 0; s < kSegs; ++s) {
-                const float a0 = static_cast<float>(s) * (6.2831853f / static_cast<float>(kSegs));
-                const float a1 = static_cast<float>(s + 1) * (6.2831853f / static_cast<float>(kSegs));
+                const float a0 = static_cast<float>(s) * (kTwoPi / static_cast<float>(kSegs));
+                const float a1 = static_cast<float>(s + 1) * (kTwoPi / static_cast<float>(kSegs));
                 const Vec3 p0 = facePointUV(bounds, cap, 0.5f + radius * std::cos(a0), 0.5f + radius * std::sin(a0));
                 const Vec3 p1 = facePointUV(bounds, cap, 0.5f + radius * std::cos(a1), 0.5f + radius * std::sin(a1));
                 pushLine(out, camPos, p0, p1, accentLineAbgr);
@@ -391,7 +458,6 @@ void emitPillarOrientationGuides(
         }
     }
 
-    // 2. Longitudinal grain flutes running along `pillarAxis` on all 4 side faces!
     const std::array<Facing, 4> barkSides =
         (pillarAxis == 0) ? std::array<Facing, 4>{Facing::North, Facing::South, Facing::West, Facing::East}
       : (pillarAxis == 1) ? std::array<Facing, 4>{Facing::Up, Facing::Down, Facing::North, Facing::South}
@@ -400,17 +466,13 @@ void emitPillarOrientationGuides(
     for (Facing side : barkSides) {
         for (float t : {0.28f, 0.72f}) {
             Vec3 a{}, b{};
-            // Map line parallel to the world axis `pillarAxis`:
             if (pillarAxis == 0) {
-                // Vertical Y grain on N/S/E/W faces -> v runs [0.10 .. 0.90]
                 a = facePointUV(bounds, side, t, 0.10f);
                 b = facePointUV(bounds, side, t, 0.90f);
             } else if (pillarAxis == 1) {
-                // East-West X grain -> u runs [0.10 .. 0.90] on Up/Down/North/South faces!
                 a = facePointUV(bounds, side, 0.10f, t);
                 b = facePointUV(bounds, side, 0.90f, t);
             } else {
-                // North-South Z grain -> v runs [0.10 .. 0.90] on Up/Down, u runs [0.10 .. 0.90] on West/East!
                 if (side == Facing::Up || side == Facing::Down) {
                     a = facePointUV(bounds, side, t, 0.10f);
                     b = facePointUV(bounds, side, t, 0.90f);
@@ -424,7 +486,6 @@ void emitPillarOrientationGuides(
     }
 }
 
-// Draws active-face aperture frame + 3D directional arrow + rear pip on 6-way blocks!
 void emitSixWayOrientationGuides(
     GhostMeshOutput& out,
     const Vec3& camPos,
@@ -434,7 +495,6 @@ void emitSixWayOrientationGuides(
     uint32_t accentFillAbgr,
     bool emitFill) {
 
-    // 1. Active front/output face beveled aperture square
     const Vec3 b0 = facePointUV(bounds, activeFace, 0.22f, 0.22f);
     const Vec3 b1 = facePointUV(bounds, activeFace, 0.78f, 0.22f);
     const Vec3 b2 = facePointUV(bounds, activeFace, 0.78f, 0.78f);
@@ -452,7 +512,6 @@ void emitSixWayOrientationGuides(
         pushQuadTwoSided(out, camPos, i0, i1, i2, i3, accentFillAbgr);
     }
 
-    // 2. Central 3D axis shaft + outward chevron along `facingNormal(activeFace)`
     const Vec3 center = bounds.center();
     const Vec3 dir = facingNormal(activeFace);
     const float halfSpan = 0.36f * std::min({
@@ -463,18 +522,8 @@ void emitSixWayOrientationGuides(
     const Vec3 tail = center - dir * halfSpan;
     const Vec3 tip = facePointUV(bounds, activeFace, 0.50f, 0.50f, 0.045f);
     pushLine(out, camPos, tail, tip, accentLineAbgr);
-
-    const Vec3 wingA = facePointUV(bounds, activeFace, 0.36f, 0.50f, -0.05f);
-    const Vec3 wingB = facePointUV(bounds, activeFace, 0.64f, 0.50f, -0.05f);
-    const Vec3 wingC = facePointUV(bounds, activeFace, 0.50f, 0.36f, -0.05f);
-    const Vec3 wingD = facePointUV(bounds, activeFace, 0.50f, 0.64f, -0.05f);
-    pushLine(out, camPos, tip, wingA, accentLineAbgr);
-    pushLine(out, camPos, tip, wingB, accentLineAbgr);
-    pushLine(out, camPos, tip, wingC, accentLineAbgr);
-    pushLine(out, camPos, tip, wingD, accentLineAbgr);
 }
 
-// Draws horizontal front-face bezel + top-face directional chevron pointing toward `frontFace`!
 void emitHorizontalOrientationGuides(
     GhostMeshOutput& out,
     const Vec3& camPos,
@@ -489,26 +538,25 @@ void emitHorizontalOrientationGuides(
         return;
     }
 
-    // 1. Top/bottom horizontal chevron pointing cleanly toward `frontFace`!
     const Facing capFace = topHalf ? Facing::Down : Facing::Up;
     Vec3 tip{}, leftWing{}, rightWing{};
     switch (frontFace) {
-        case Facing::North: // -Z -> v = 0.16
+        case Facing::North:
             tip       = facePointUV(bounds, capFace, 0.50f, 0.16f);
             leftWing  = facePointUV(bounds, capFace, 0.28f, 0.44f);
             rightWing = facePointUV(bounds, capFace, 0.72f, 0.44f);
             break;
-        case Facing::South: // +Z -> v = 0.84
+        case Facing::South:
             tip       = facePointUV(bounds, capFace, 0.50f, 0.84f);
             leftWing  = facePointUV(bounds, capFace, 0.72f, 0.56f);
             rightWing = facePointUV(bounds, capFace, 0.28f, 0.56f);
             break;
-        case Facing::West:  // -X -> u = 0.16
+        case Facing::West:
             tip       = facePointUV(bounds, capFace, 0.16f, 0.50f);
             leftWing  = facePointUV(bounds, capFace, 0.44f, 0.72f);
             rightWing = facePointUV(bounds, capFace, 0.44f, 0.28f);
             break;
-        case Facing::East:  // +X -> u = 0.84
+        case Facing::East:
         default:
             tip       = facePointUV(bounds, capFace, 0.84f, 0.50f);
             leftWing  = facePointUV(bounds, capFace, 0.56f, 0.28f);
@@ -521,16 +569,6 @@ void emitHorizontalOrientationGuides(
     if (emitFill) {
         pushTriTwoSided(out, camPos, leftWing, tip, rightWing, accentFillAbgr);
     }
-
-    // 2. Front-face latch / aperture marker on `frontFace`
-    const Vec3 f0 = facePointUV(bounds, frontFace, 0.36f, 0.38f);
-    const Vec3 f1 = facePointUV(bounds, frontFace, 0.64f, 0.38f);
-    const Vec3 f2 = facePointUV(bounds, frontFace, 0.64f, 0.62f);
-    const Vec3 f3 = facePointUV(bounds, frontFace, 0.36f, 0.62f);
-    pushLine(out, camPos, f0, f1, accentLineAbgr);
-    pushLine(out, camPos, f1, f2, accentLineAbgr);
-    pushLine(out, camPos, f2, f3, accentLineAbgr);
-    pushLine(out, camPos, f3, f0, accentLineAbgr);
 }
 
 } // namespace
@@ -543,44 +581,68 @@ void GhostMesher::buildMesh(
     GhostMeshOutput& outMesh) {
 
     outMesh.clear();
-    if (!cfg.enabled || !preview.valid || preview.worldBoxes.empty()) {
+    if (!cfg.enabled || !preview.valid ||
+        (preview.worldBoxes.empty() && preview.orientedBoxes.empty()) ||
+        preview.visibilityAlpha <= 0.01f) {
         return;
     }
 
     const float pulseFactor = cfg.subtleBreathingPulse
                                   ? (0.90f + 0.10f * std::sin(pulsePhaseRadians))
                                   : 1.0f;
+    const float vis = std::clamp(preview.visibilityAlpha, 0.0f, 1.0f) * cfg.colorAlphaMultiplier();
+    if (vis <= 0.008f) {
+        return;
+    }
 
     const bool emitFill = (cfg.renderMode != "Wireframe Only");
     const bool emitWire = (cfg.renderMode != "Translucent Fill");
 
     const RgbaColor baseRgb = cfg.resolveBaseColor(preview.materialColor);
-    const float fillAlpha = std::clamp(cfg.fillOpacity * pulseFactor, 0.04f, 0.90f);
-    const float wireAlpha = std::clamp(cfg.wireframeOpacity * (0.94f + 0.06f * pulseFactor), 0.10f, 1.00f);
+    const float fillAlpha = std::clamp(cfg.fillOpacity * pulseFactor * vis, 0.01f, 0.90f);
+    const float wireAlpha = std::clamp(cfg.wireframeOpacity * (0.94f + 0.06f * pulseFactor) * vis, 0.02f, 1.00f);
 
     static constexpr std::array<Facing, 6> kAllFaces{
         Facing::Down, Facing::Up, Facing::North, Facing::South, Facing::West, Facing::East
     };
 
-    // Reserve approximate vertex capacity up front to avoid reallocations on the Render Thread.
-    outMesh.triangles.reserve(preview.worldBoxes.size() * 28);
-    outMesh.lines.reserve(preview.worldBoxes.size() * 32 + 32);
-    outMesh.packedTriangles.reserve(preview.worldBoxes.size() * 84);
-    outMesh.packedLines.reserve(preview.worldBoxes.size() * 64 + 64);
+    const std::size_t partCount = !preview.orientedBoxes.empty()
+                                      ? preview.orientedBoxes.size()
+                                      : preview.worldBoxes.size();
+    outMesh.triangles.reserve(partCount * 28);
+    outMesh.lines.reserve(partCount * 32 + 32);
+    outMesh.packedTriangles.reserve(partCount * 84);
+    outMesh.packedLines.reserve(partCount * 64 + 64);
 
     std::vector<EmittedEdge> emittedEdges;
-    emittedEdges.reserve(preview.worldBoxes.size() * 12 + 8);
+    emittedEdges.reserve(partCount * 12 + 8);
 
-    // 1. Emit camera-facing exterior surfaces & deduplicated silhouette/corner edges across ALL sub-boxes!
+    // 1A. True 3D Oriented Box path (16-angle standing signs, hanging signs, banners, skulls,
+    //     angled wall torches, slanted lecterns, and smooth rotated animations!)
+    if (!preview.orientedBoxes.empty()) {
+        for (const auto& obb : preview.orientedBoxes) {
+            emitOrientedBox(
+                outMesh,
+                cameraWorldPos,
+                emittedEdges,
+                obb,
+                baseRgb,
+                fillAlpha,
+                wireAlpha,
+                cfg.directionalShading,
+                emitFill,
+                emitWire);
+        }
+        return;
+    }
+
+    // 1B. Coplanar-culled multi-AABB exterior path (Stairs, Corners, Slabs, Doors, Beds, Fences, Walls, Hoppers, Cubes)
     for (std::size_t i = 0; i < preview.worldBoxes.size(); ++i) {
         const AABB box = preview.worldBoxes[i].normalized();
         if (box.isDegenerate()) {
             continue;
         }
 
-        // If camera is inside the box (rare close-up inspection), keep all faces visible;
-        // otherwise render strictly exterior faces oriented toward `cameraWorldPos` so back walls
-        // and hidden internal back-corner edges never clutter the translucent preview!
         bool anyCameraFacing = false;
         for (Facing fCheck : kAllFaces) {
             if (faceVisibleFromCamera(box, fCheck, cameraWorldPos)) {
@@ -599,7 +661,6 @@ void GhostMesher::buildMesh(
 
             std::vector<Rect2D> visibleRects{faceRect2D(box, face)};
 
-            // Clip away coplanar interior contact areas shared with adjacent sub-boxes in this preview!
             for (std::size_t j = 0; j < preview.worldBoxes.size() && !visibleRects.empty(); ++j) {
                 if (i == j) continue;
                 const AABB other = preview.worldBoxes[j].normalized();
@@ -624,16 +685,10 @@ void GhostMesher::buildMesh(
             const float light = faceLightFactor(face, cfg.directionalShading);
             const RgbaColor litBase = baseRgb.shaded(light);
             const RgbaColor shadedFill = RgbaColor::withFloatAlpha(
-                litBase.r,
-                litBase.g,
-                litBase.b,
-                fillAlpha);
+                litBase.r, litBase.g, litBase.b, fillAlpha);
             const RgbaColor brightEdgeBase = baseRgb.shaded(std::min(1.0f, light + 0.14f));
             const RgbaColor edgeColor = RgbaColor::withFloatAlpha(
-                brightEdgeBase.r,
-                brightEdgeBase.g,
-                brightEdgeBase.b,
-                wireAlpha);
+                brightEdgeBase.r, brightEdgeBase.g, brightEdgeBase.b, wireAlpha);
 
             for (const auto& r : visibleRects) {
                 if (!r.empty()) {
@@ -653,7 +708,6 @@ void GhostMesher::buildMesh(
         }
     }
 
-    // 2. When merging a half-slab into a full double-slab block, draw a subtle outer full-block frame!
     if (preview.hasMergeOutlineBox && emitWire) {
         const uint32_t mergeAbgr = RgbaColor::withFloatAlpha(
             255, 255, 255, std::min(1.0f, wireAlpha * 0.45f)).packAbgr();
@@ -674,9 +728,8 @@ void GhostMesher::buildMesh(
         }
     }
 
-    // 3. Emit 3D Orientation Guides (Pillar end-grain + flutes, 6-Way active aperture + shaft,
-    //    4-Way horizontal front latch + top pointer chevron)!
-    if (cfg.showOrientationGuides && preview.orientationKind != OrientationKind::None) {
+    if (cfg.showOrientationGuides && preview.orientationKind != OrientationKind::None &&
+        !preview.worldBoxes.empty()) {
         const AABB bounds = computeUnionBounds(preview.worldBoxes);
         const RgbaColor guideBright = RgbaColor::withFloatAlpha(
             static_cast<uint8_t>(std::min(255, static_cast<int>(baseRgb.r) + 55)),
@@ -708,30 +761,11 @@ void GhostMesher::buildMesh(
                 break;
 
             case OrientationKind::SlabHalf:
+            case OrientationKind::Sign16:
             case OrientationKind::None:
                 break;
         }
     }
-
-    // 4. Optional sub-target hit pip on the clicked face when placing slabs/stairs/directional blocks.
-    if (cfg.showSubTargetPip &&
-        (preview.orientationKind == OrientationKind::SlabHalf ||
-         preview.orientationKind == OrientationKind::Horizontal ||
-         preview.orientationKind == OrientationKind::SixWay)) {
-        const Vec3 origin = preview.primaryPos.originVec();
-        const Vec3 pipCenter = origin + preview.subClick;
-        const uint32_t pipAbgr = RgbaColor::withFloatAlpha(255, 255, 255, wireAlpha * 0.55f).packAbgr();
-        constexpr float kPipHalf = 0.035f;
-        pushLine(outMesh, cameraWorldPos,
-                 pipCenter - Vec3{kPipHalf, 0.0f, 0.0f},
-                 pipCenter + Vec3{kPipHalf, 0.0f, 0.0f}, pipAbgr);
-        pushLine(outMesh, cameraWorldPos,
-                 pipCenter - Vec3{0.0f, kPipHalf, 0.0f},
-                 pipCenter + Vec3{0.0f, kPipHalf, 0.0f}, pipAbgr);
-        pushLine(outMesh, cameraWorldPos,
-                 pipCenter - Vec3{0.0f, 0.0f, kPipHalf},
-                 pipCenter + Vec3{0.0f, 0.0f, kPipHalf}, pipAbgr);
-    }
 }
 
-} // namespace buildghost
+} // namespace placepreview

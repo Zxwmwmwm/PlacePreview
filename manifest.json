@@ -1,10 +1,10 @@
 {
   "format_version": 2,
-  "name": "BuildGhost",
-  "id": "zxwmwmwm.build_ghost",
-  "entry": "libBuildGhost.so",
+  "name": "Place Preview",
+  "id": "zxwmwmwm.placepreview",
+  "entry": "libPlacePreview.so",
   "version": "1.0.0",
   "type": "preload-native",
   "author": "Zxwmwmwm",
-  "description": "Real-time translucent 3D placement preview showing exact block target position, orientation, slab merges, stairs, pillars, doors, and beds."
+  "description": "Smooth, accurate 3D block placement preview showing exact block shape, orientation, and target position."
 }

@@ -1,17 +1,19 @@
-# BuildGhost
+# Place Preview
 
-Real-time translucent 3D placement preview mod (`preload-native`, `arm64-v8a`, 16 KB page-size aligned) for **Minecraft: Bedrock Edition `1.26.52.03`** on Android via **LeviLauncher / Preloader**.
+Smooth, accurate real-time 3D block placement preview mod (`preload-native`, `arm64-v8a`, 16 KB page-size aligned) for **Minecraft: Bedrock Edition `1.26.52.03`** on Android via **LeviLauncher / Preloader**.
 
 ## Features
 
-- **Continuous 60–120 FPS Center-Crosshair Tracking (Touch & Split Controls)**: Traces the live sub-tick interpolated render camera ray (`ScreenContext` camera eye position + live `pitch/yaw` look vector) through an exact 3D Amanatides-Woo voxel + sub-AABB raycaster across Creative (`11.5m`) and Survival/Adventure (`5.5m`) reaches — so the preview follows the exact center crosshair smoothly every frame on both Android Touch Mode and Split Controls without needing to tap first.
-- **Immediate Validation & Instant Update Across All Gamemodes**: Evaluates read-only chunk/block states (`LevelChunk::getBlock`), live entity/player hitbox collision checks, Adventure-mode permissions, Spectator detection (`GameType == 6`), and multi-block support rules. Switching freely between Creative, Survival, Adventure, and Spectator updates immediately on the exact frame with zero crashes.
-- **Clean Frosted-White 3D Geometry & Orientation**:
-  - **Camera-Facing Exterior Shading**: Renders clean frosted-white translucent exterior faces with natural directional shading and deduplicated silhouette/corner edges — zero internal hidden-line clutter or back-wall double-blending.
-  - **Stairs**: Exact upright and upside-down orientation (`subClick.y > 0.5`), 4-way yaw direction, and live outer/inner corner morphing with coplanar interior seam culling.
-  - **Slabs & Slab Merges**: Upper/lower half-slab previews plus **smart half-slab merge diffing** — aiming a matching single slab at an existing bottom/top slab previews ONLY the missing upper/lower half slotting cleanly onto the existing slab.
-  - **Logs, Pillars, 6-Way Utility Blocks, 2-Block Doors & Beds, Lily Pads & Offhand**: Full 3D geometry across pillars (`Y/X/Z`), 6-way directional blocks, 2-block doors (hinge side + ceiling check), 2-block beds (legs + head pillow + 16-color dye tinting), liquid-surface blocks, and optional offhand block fallback.
-- **In-Game Mod Menu & Persistent Config**: Full Mod Menu v2 panel with 6 built-in presets (`Frosted White` default, `Classic Cyan`, `Material Tint`, `Crisp Wireframe`, `Subtle Minimal`, `High Contrast`), render style selector, custom RGB or automatic per-material tinting, fill/wireframe opacity sliders, optional 3D schematic orientation guides, and persistent `buildghost.json` storage.
+- **Exact 3D Block & Item Shape Accuracy**:
+  - Reads live engine block states and outlines (`ItemStackBase::mBlock`, `BlockTypeRegistry`, `BlockType::getPlacementBlock`, and `BlockType::getOutline`) across vanilla and custom addon blocks while immediately hiding when holding non-placeable tools, weapons, food, or items.
+  - True 3D oriented geometry (`OrientedBox`) for **16-angle standing signs** (wooden post + full-width sign board rotated to your exact yaw angle), **hanging signs** (ceiling dual chains + board & horizontal wall side-arm bracket), **standing & wall banners**, **16-angle skulls & heads**, **angled wall torches**, and **slanted lecterns**.
+  - Multi-part 3D geometry with coplanar interior seam culling for **stairs** (upright, upside-down, outer & inner corners), **slabs & half-slab merges**, **2-block doors** (exact hinge side), **2-block beds** (legs + pillow + 16 dye colors), **walls / fences / panes / iron bars** (live neighbor connections), **fence gates**, **hoppers**, **anvils**, **cauldrons**, **campfires**, **lanterns**, **1–4 candle clusters**, **pots**, **frames**, and **water-surface blocks**.
+- **Smooth 3D Block-to-Block Transition Animation**:
+  - Glides smoothly from block to block instead of popping instantaneously out of nowhere, morphs sub-block slab/rotation changes cleanly, and gently fades in and out when aiming at valid surfaces vs sky/out-of-reach targets.
+- **Interactive Slider Color Changer with Live Swatch Preview**:
+  - Native Mod Menu `#AARRGGBB` slider & spectrum color picker with live visible color preview, quick style presets (`Frosted White`, `Classic Cyan`, `Material Adaptive`, `Crisp Wireframe`, `Subtle Minimal`, `High Contrast`), opacity controls, and clean Bedrock-only settings.
+- **60–120 FPS Center-Crosshair Tracking Across All Gamemodes**:
+  - Works seamlessly on both Android Touch Mode and Split Controls across Creative (`11.5m`), Survival (`5.5m`), and Adventure (`5.5m`), hiding cleanly in Spectator mode.
 
 ## Building from Source
 
@@ -35,12 +37,12 @@ export FMT_INCLUDE_DIR=/path/to/fmt/include
 bash ./scripts/build.sh
 ```
 
-Outputs `artifacts/libBuildGhost.so` and `artifacts/BuildGhost.levipack`.
+Outputs `artifacts/libPlacePreview.so` and `artifacts/PlacePreview.levipack`.
 
 ## Installation
 
-1. Download **`BuildGhost.levipack`** from [Releases](https://github.com/Zxwmwmwm/BuildGhost/releases).
-2. Import `BuildGhost.levipack` in **LeviLauncher** (`Mods -> Import`).
+1. Download **`PlacePreview.levipack`** from [Releases](https://github.com/Zxwmwmwm/PlacePreview/releases).
+2. Import `PlacePreview.levipack` in **LeviLauncher** (`Mods -> Import`).
 3. Launch Minecraft `1.26.52.03` and hold any placeable block to see its live 3D placement preview.
 
 ## License

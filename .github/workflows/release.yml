@@ -38,13 +38,14 @@ jobs:
           raw_tag = os.environ.get("INPUT_TAG") or os.environ["REF_NAME"]
           expected_ver = raw_tag.lstrip("v")
 
-          hdr = parse_version_header(Path("include/buildghost/Version.hpp"))
+          hdr = parse_version_header(Path("include/placepreview/Version.hpp"))
           manifest = json.loads(Path("manifest.json").read_text(encoding="utf-8"))
           levimod = json.loads(Path("levimod.json").read_text(encoding="utf-8"))
 
           assert hdr["Version"] == expected_ver, f"Version.hpp={hdr['Version']} != tag {expected_ver}"
           assert manifest["version"] == expected_ver, f"manifest.json={manifest['version']} != tag {expected_ver}"
           assert levimod["version"] == expected_ver, f"levimod.json={levimod['version']} != tag {expected_ver}"
+          assert manifest["name"] == "Place Preview", f"Unexpected manifest name {manifest['name']}"
           assert manifest["author"] == "Zxwmwmwm", f"Unexpected author {manifest['author']}"
           assert levimod["author"] == "Zxwmwmwm", f"Unexpected author {levimod['author']}"
           print(f"Verified version {expected_ver} across Version.hpp, manifest.json, and levimod.json")
@@ -55,11 +56,11 @@ jobs:
 
       - name: Run C++20 Host Unit & Integration Suite (ASan + UBSan)
         run: |
-          cmake -S . -B /tmp/bg-host-test -G Ninja \
+          cmake -S . -B /tmp/pp-host-test -G Ninja \
             -DCMAKE_BUILD_TYPE=Debug \
             -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer"
-          cmake --build /tmp/bg-host-test -j"$(nproc)"
-          ctest --test-dir /tmp/bg-host-test --output-on-failure
+          cmake --build /tmp/pp-host-test -j"$(nproc)"
+          ctest --test-dir /tmp/pp-host-test --output-on-failure
 
       - name: Setup Android NDK r29
         uses: nttld/setup-ndk@v1
@@ -81,7 +82,7 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release
           cmake --build /tmp/preloader-android/build --target preloader -j"$(nproc)"
 
-      - name: Build BuildGhost & Package Release Assets
+      - name: Build Place Preview & Package Release Assets
         env:
           ANDROID_NDK_HOME: ${{ steps.ndk.outputs.ndk-path }}
           PRELOADER_INCLUDE_DIR: /tmp/preloader-android/include
@@ -89,14 +90,14 @@ jobs:
           FMT_INCLUDE_DIR: /tmp/fmt-11.2.0/include
         run: |
           bash ./scripts/build.sh
-          ls -lh artifacts/BuildGhost.levipack artifacts/libBuildGhost.so
+          ls -lh artifacts/PlacePreview.levipack artifacts/libPlacePreview.so
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.event.inputs.tag || github.ref_name }}
-          name: BuildGhost ${{ github.event.inputs.tag || github.ref_name }}
+          name: Place Preview ${{ github.event.inputs.tag || github.ref_name }}
           files: |
-            artifacts/BuildGhost.levipack
-            artifacts/libBuildGhost.so
+            artifacts/PlacePreview.levipack
+            artifacts/libPlacePreview.so
           generate_release_notes: true

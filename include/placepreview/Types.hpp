@@ -7,7 +7,11 @@
 #include <utility>
 #include <vector>
 
-namespace buildghost {
+namespace placepreview {
+
+inline constexpr float kPi = 3.14159265358979323846f;
+inline constexpr float kTwoPi = 6.28318530717958647692f;
+inline constexpr float kDegToRad = kPi / 180.0f;
 
 struct Vec3 {
     float x{0.0f};
@@ -26,11 +30,27 @@ struct Vec3 {
     [[nodiscard]] constexpr Vec3 operator*(float s) const noexcept {
         return {x * s, y * s, z * s};
     }
+    [[nodiscard]] constexpr float dot(const Vec3& o) const noexcept {
+        return x * o.x + y * o.y + z * o.z;
+    }
+    [[nodiscard]] constexpr Vec3 cross(const Vec3& o) const noexcept {
+        return {
+            y * o.z - z * o.y,
+            z * o.x - x * o.z,
+            x * o.y - y * o.x
+        };
+    }
     [[nodiscard]] float lengthSq() const noexcept {
         return x * x + y * y + z * z;
     }
     [[nodiscard]] float length() const noexcept {
         return std::sqrt(lengthSq());
+    }
+    [[nodiscard]] Vec3 normalizedOr(const Vec3& fallback) const noexcept {
+        const float lenSq = lengthSq();
+        if (lenSq < 1e-10f) return fallback;
+        const float inv = 1.0f / std::sqrt(lenSq);
+        return {x * inv, y * inv, z * inv};
     }
 };
 
@@ -94,6 +114,10 @@ struct AABB {
         return {(min.x + max.x) * 0.5f, (min.y + max.y) * 0.5f, (min.z + max.z) * 0.5f};
     }
 
+    [[nodiscard]] constexpr Vec3 halfExtents() const noexcept {
+        return {sizeX() * 0.5f, sizeY() * 0.5f, sizeZ() * 0.5f};
+    }
+
     [[nodiscard]] constexpr bool isDegenerate(float eps = 1e-4f) const noexcept {
         return sizeX() <= eps || sizeY() <= eps || sizeZ() <= eps;
     }
@@ -115,9 +139,83 @@ struct AABB {
     }
 };
 
+// Right-handed 3D Oriented Box (`det([axisU, axisV, axisW]) == +1`) enabling exact 3D rotation
+// for 16-angle standing signs, hanging signs, standing banners, skulls/heads, angled wall
+// torches, levers, slanted lectern tops, and smooth continuous block-to-block animation.
+struct OrientedBox {
+    Vec3 center{0.5f, 0.5f, 0.5f};
+    Vec3 halfExtents{0.5f, 0.5f, 0.5f};
+    Vec3 axisU{1.0f, 0.0f, 0.0f};
+    Vec3 axisV{0.0f, 1.0f, 0.0f};
+    Vec3 axisW{0.0f, 0.0f, 1.0f};
+    float yawRad{0.0f};
+    bool axisAligned{true};
+
+    [[nodiscard]] bool isDegenerate(float eps = 1e-4f) const noexcept {
+        return halfExtents.x <= eps || halfExtents.y <= eps || halfExtents.z <= eps;
+    }
+
+    [[nodiscard]] AABB enclosingAABB() const noexcept {
+        const float ex = std::fabs(axisU.x) * halfExtents.x +
+                         std::fabs(axisV.x) * halfExtents.y +
+                         std::fabs(axisW.x) * halfExtents.z;
+        const float ey = std::fabs(axisU.y) * halfExtents.x +
+                         std::fabs(axisV.y) * halfExtents.y +
+                         std::fabs(axisW.y) * halfExtents.z;
+        const float ez = std::fabs(axisU.z) * halfExtents.x +
+                         std::fabs(axisV.z) * halfExtents.y +
+                         std::fabs(axisW.z) * halfExtents.z;
+        return AABB{
+            {center.x - ex, center.y - ey, center.z - ez},
+            {center.x + ex, center.y + ey, center.z + ez}
+        };
+    }
+
+    [[nodiscard]] static OrientedBox fromAABB(const AABB& raw) noexcept {
+        const AABB b = raw.normalized();
+        OrientedBox obb{};
+        obb.center = b.center();
+        obb.halfExtents = b.halfExtents();
+        obb.axisU = {1.0f, 0.0f, 0.0f};
+        obb.axisV = {0.0f, 1.0f, 0.0f};
+        obb.axisW = {0.0f, 0.0f, 1.0f};
+        obb.yawRad = 0.0f;
+        obb.axisAligned = true;
+        return obb;
+    }
+
+    // Rotates `localOffset` around the cell vertical pivot `(cellOrigin.x + 0.5, y, cellOrigin.z + 0.5)`
+    // using right-handed basis U=(cos, 0, sin), V=(0, 1, 0), W=(-sin, 0, cos) so that at `yawRad`:
+    //   - `U` spans the horizontal board width perpendicular to player gaze `(-sin, 0, +cos)`
+    //   - `-W` points directly back toward the player!
+    [[nodiscard]] static OrientedBox fromCellYaw(
+        const Vec3& cellOrigin,
+        const Vec3& localOffsetFromPivot,
+        const Vec3& halfExt,
+        float angleRad) noexcept {
+
+        const float c = std::cos(angleRad);
+        const float s = std::sin(angleRad);
+        const Vec3 u{c, 0.0f, s};
+        const Vec3 v{0.0f, 1.0f, 0.0f};
+        const Vec3 w{-s, 0.0f, c};
+        const Vec3 pivot{cellOrigin.x + 0.5f, cellOrigin.y, cellOrigin.z + 0.5f};
+
+        OrientedBox obb{};
+        obb.center = pivot + u * localOffsetFromPivot.x + v * localOffsetFromPivot.y + w * localOffsetFromPivot.z;
+        obb.halfExtents = halfExt;
+        obb.axisU = u;
+        obb.axisV = v;
+        obb.axisW = w;
+        obb.yawRad = angleRad;
+        obb.axisAligned = false;
+        return obb;
+    }
+};
+
 struct RgbaColor {
-    uint8_t r{96};
-    uint8_t g{224};
+    uint8_t r{255};
+    uint8_t g{255};
     uint8_t b{255};
     uint8_t a{255};
 
@@ -151,9 +249,7 @@ struct RgbaColor {
 
 // Verified against Minecraft Bedrock 1.26.52.03 DebugRenderer::renderEnd (0x0b25de34):
 // BOTH mLineVertices (+0x50, LineList mode=4, 2 vertices/line) AND mTriangleVertices (+0x68,
-// TriangleList mode=2, 3 vertices/triangle) use 16-byte world-space PackedVertex elements
-// (`lsr x3, x8, #4`, `add x23, x23, #0x10`), and renderEnd itself applies
-// Tessellator::setOffset(-camPos.x, -camPos.y, -camPos.z).
+// TriangleList mode=2, 3 vertices/triangle) use 16-byte world-space PackedVertex elements.
 struct PackedVertex {
     float x{0.0f};
     float y{0.0f};
@@ -162,8 +258,6 @@ struct PackedVertex {
 };
 static_assert(sizeof(PackedVertex) == 16, "PackedVertex ABI must match 16-byte stride in DebugRenderer");
 
-// Host-side logical line segment & triangle descriptors (retained for deterministic geometry
-// inspection & unit tests alongside world-space PackedVertex submission buffers).
 struct DebugLineVertex {
     float x1{0.0f};
     float y1{0.0f};
@@ -267,6 +361,28 @@ enum class Facing : uint8_t {
     return Facing::South;
 }
 
+// Exact 16-angle ground_sign_direction index (0..15) & world rotation angle (radians):
+// Matches SignItem::_useOn (0x0fefd74c): `floor((actorYaw + 180) * 16 / 360 + 0.5) & 15`.
+[[nodiscard]] inline int yawToGroundSignDirection16(float yawDeg) noexcept {
+    const float scaled = (yawDeg + 180.0f) * (16.0f / 360.0f);
+    return static_cast<int>(std::floor(scaled + 0.5f)) & 15;
+}
+
+[[nodiscard]] inline float groundSignDirectionToYawRad(int dir16) noexcept {
+    return static_cast<float>((dir16 & 15) - 8) * (kTwoPi / 16.0f);
+}
+
+[[nodiscard]] inline float cardinalFacingToYawRad(Facing frontFacingPlayer) noexcept {
+    // Basis U=(cos,0,sin), -W=(sin,0,-cos) faces `frontFacingPlayer`:
+    switch (frontFacingPlayer) {
+        case Facing::North: return 0.0f;            // -W = (0, 0, -1)
+        case Facing::East:  return kPi * 0.5f;      // -W = (+1, 0, 0)
+        case Facing::South: return kPi;             // -W = (0, 0, +1)
+        case Facing::West:  return -kPi * 0.5f;     // -W = (-1, 0, 0)
+        default:            return 0.0f;
+    }
+}
+
 [[nodiscard]] inline Facing pitchYawToSixWayLook(float pitchDeg, float yawDeg) noexcept {
     if (pitchDeg > 60.0f) {
         return Facing::Down;
@@ -282,7 +398,8 @@ enum class OrientationKind : uint8_t {
     PillarAxis, // Logs, stems, pillars, basalt, hay, bone, chains, deepslate (axis: 0=Y, 1=X, 2=Z)
     SixWay,     // Pistons, observers, dispensers, droppers, hoppers, barrels, rods (facing: Down..East)
     Horizontal, // Stairs, furnaces, chests, lecterns, looms, anvils, doors, beds, gates, shulkers
-    SlabHalf    // Slabs & vertical half merges
+    SlabHalf,   // Slabs & vertical half merges
+    Sign16      // 16-angle standing signs, hanging signs, banners, and skulls/heads
 };
 
 struct BlockStateProperty {
@@ -303,19 +420,28 @@ struct PlacementPreviewState {
     OrientationKind orientationKind{OrientationKind::None};
     int pillarAxis{0};              // 0 = Y, 1 = X, 2 = Z
     Facing facing{Facing::North};   // Primary facing direction (front / output / stair ascend)
+    int rotation16{8};              // 0..15 ground_sign_direction
+    float yawRadians{0.0f};         // Exact 3D world rotation angle for OBB parts
     bool topHalf{false};            // Top slab / upside-down stair or trapdoor
     bool hingeRight{false};         // Door hinge side
     bool isSlabMerge{false};        // Merging single slab into existing half-slab -> double slab
     bool isMultiBlock{false};       // 2-block Door or Bed preview
-    bool isOffhand{false};          // Resolved from offhand item slot
+
+    // Smooth transition opacity multiplier in [0..1] driven by PreviewAnimator.
+    float visibilityAlpha{1.0f};
 
     std::string blockIdentifier;
     uint16_t stateData{0};
     int auxData{0};
-    RgbaColor materialColor{96, 224, 255, 255};
+    RgbaColor materialColor{255, 255, 255, 255};
 
-    // World-space sub-box geometry for the placed block(s).
+    // World-space axis-aligned boxes (used for raycast, player AABB collision & AABB coplanar union).
     std::vector<AABB> worldBoxes;
+
+    // Optional true 3D oriented boxes (e.g. 16-angle standing signs, hanging signs, banners,
+    // skulls, tilted wall torches, slanted lectern bookstand, or animated glide frames).
+    // When non-empty, GhostMesher renders these exact 3D OBB parts directly!
+    std::vector<OrientedBox> orientedBoxes;
 
     // Optional full-cell reference outline when merging two half-slabs.
     bool hasMergeOutlineBox{false};
@@ -329,14 +455,16 @@ struct PlacementPreviewState {
                orientationKind == o.orientationKind &&
                pillarAxis == o.pillarAxis &&
                facing == o.facing &&
+               rotation16 == o.rotation16 &&
                topHalf == o.topHalf &&
                hingeRight == o.hingeRight &&
                isSlabMerge == o.isSlabMerge &&
                blockIdentifier == o.blockIdentifier &&
                stateData == o.stateData &&
                auxData == o.auxData &&
-               worldBoxes.size() == o.worldBoxes.size();
+               worldBoxes.size() == o.worldBoxes.size() &&
+               orientedBoxes.size() == o.orientedBoxes.size();
     }
 };
 
-} // namespace buildghost
+} // namespace placepreview

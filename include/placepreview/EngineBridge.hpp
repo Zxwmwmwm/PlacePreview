@@ -2,7 +2,7 @@
 
 #include <cstdint>
 
-namespace buildghost {
+namespace placepreview {
 
 struct ModConfig;
 struct GhostMeshOutput;
@@ -23,7 +23,6 @@ public:
     void notifyConfigUpdated(const ModConfig& cfg) noexcept;
     [[nodiscard]] BridgeStats stats() const noexcept;
 
-    // Non-owning world-space 16-byte PackedVertex swap pass shared by live gameplay & ASan tests.
     static void flushMeshIntoDebugRenderer(
         void* debugRenderer,
         void* renderParams,
@@ -34,4 +33,4 @@ private:
     EngineBridge() = default;
 };
 
-} // namespace buildghost
+} // namespace placepreview

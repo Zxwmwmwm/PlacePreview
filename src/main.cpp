@@ -1,64 +1,64 @@
-#include "buildghost/Config.hpp"
-#include "buildghost/EngineBridge.hpp"
-#include "buildghost/ModMenuUi.hpp"
-#include "buildghost/Version.hpp"
+#include "placepreview/Config.hpp"
+#include "placepreview/EngineBridge.hpp"
+#include "placepreview/ModMenuUi.hpp"
+#include "placepreview/Version.hpp"
 
 #include <pl/Mod.hpp>
 
 namespace {
 
-class BuildGhostMod {
+class PlacePreviewMod {
 public:
-    static BuildGhostMod& instance() noexcept {
-        static BuildGhostMod mod;
+    static PlacePreviewMod& instance() noexcept {
+        static PlacePreviewMod mod;
         return mod;
     }
 
     bool load(pl::mod::ModContext& context) {
-        buildghost::ConfigManager::instance().init(context.configDir());
+        placepreview::ConfigManager::instance().init(context.configDir());
         context.logger().info(
             "{} v{} loaded (config: {})",
-            buildghost::version::Name,
-            buildghost::version::Version,
+            placepreview::version::Name,
+            placepreview::version::Version,
             context.configDir().string());
         return true;
     }
 
     bool enable(pl::mod::ModContext& context) {
-        if (!buildghost::EngineBridge::instance().installHooks()) {
+        if (!placepreview::EngineBridge::instance().installHooks()) {
             context.logger().error(
                 "Failed to install native placement preview hook for {}",
-                buildghost::version::Name);
+                placepreview::version::Name);
             return false;
         }
 
-        if (!buildghost::ui::registerMenu(context.info().id)) {
+        if (!placepreview::ui::registerMenu(context.info().id)) {
             context.logger().warn(
                 "Mod Menu UI registration non-fatal failure; JSON config remains active");
         }
 
         context.logger().info(
             "{} v{} enabled",
-            buildghost::version::Name,
-            buildghost::version::Version);
+            placepreview::version::Name,
+            placepreview::version::Version);
         return true;
     }
 
     bool disable(pl::mod::ModContext& context) {
-        buildghost::ui::unregisterMenu();
-        buildghost::EngineBridge::instance().uninstallHooks();
-        context.logger().info("{} disabled", buildghost::version::Name);
+        placepreview::ui::unregisterMenu();
+        placepreview::EngineBridge::instance().uninstallHooks();
+        context.logger().info("{} disabled", placepreview::version::Name);
         return true;
     }
 
     bool unload(pl::mod::ModContext& context) {
-        buildghost::ui::unregisterMenu();
-        buildghost::EngineBridge::instance().uninstallHooks();
-        context.logger().info("{} unloaded", buildghost::version::Name);
+        placepreview::ui::unregisterMenu();
+        placepreview::EngineBridge::instance().uninstallHooks();
+        context.logger().info("{} unloaded", placepreview::version::Name);
         return true;
     }
 };
 
 } // namespace
 
-PL_REGISTER_MOD(BuildGhostMod, BuildGhostMod::instance())
+PL_REGISTER_MOD(PlacePreviewMod, PlacePreviewMod::instance())

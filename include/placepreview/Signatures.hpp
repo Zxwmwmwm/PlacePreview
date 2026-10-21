@@ -5,22 +5,20 @@
 #include <cstring>
 #include <string_view>
 
-namespace buildghost::sig {
+namespace placepreview::sig {
 
 // ============================================================================
 // Verified RVAs & +0x10 instruction words for Minecraft Bedrock 1.26.52.03
 // arm64-v8a (libminecraftpe.so).
 //
 // Instant < 0.2 ms resolution strategy (ZERO UI main-thread signature scans):
-//   1. Resolve LevelRendererPlayer::vtable[20] via fast symbol/RTTI vtable lookup
-//      (pl::memory::resolveVtableFunction("19LevelRendererPlayer", 20)).
-//   2. Subtract LRP_setupFog (0x0b29b70c) to obtain exact page-aligned moduleBase
-//      and verify readInsnWord(addr + 0x10) == LRP_setupFog_Word10.
-//   3. Compute every target function directly via moduleBase + RVA and verify
-//      its instruction word at +0x10 before installing any detour.
-//   4. If running on a future game build where RVAs shifted, wildcard signature
-//      scanning runs ONLY on a detached background worker thread so Mod::enable()
-//      NEVER stalls Android's UI main thread (preventing ANRs).
+//   1. Resolve module base via dl_iterate_phdr + instruction word guard at
+//      DebugRenderer_renderEnd + 0x10 (fallback: LevelRendererPlayer::vtable[20]).
+//   2. Compute every target function directly via moduleBase + RVA and verify
+//      its instruction word before installing any detour or reading globals.
+//   3. If running on a future game build where RVAs shifted, wildcard signature
+//      scanning runs ONLY on a background worker thread so Mod::enable() NEVER
+//      stalls Android's UI main thread (preventing ANRs).
 // ============================================================================
 namespace rva {
 inline constexpr uintptr_t LRP_setupFog                 = 0x0b29b70c;
@@ -40,6 +38,15 @@ inline constexpr uint32_t  Player_isCreative_W10         = 0xf940080bu;
 
 inline constexpr uintptr_t Entity_getPlayerGameType      = 0x0f9ba104;
 inline constexpr uint32_t  Entity_getPlayerGameType_W10  = 0xcb0b0108u;
+
+// Verified BlockTypeRegistry singleton getter & global instance (disassembled @ 0x103e33a8):
+//   103e33a8: b00187a0  adrp x0, 0x134d8000
+//   103e33ac: 9110e000  add  x0, x0, #0x438
+//   103e33b0: d65f03c0  ret
+inline constexpr uintptr_t BlockTypeRegistry_getter      = 0x103e33a8;
+inline constexpr uint32_t  BlockTypeRegistry_getter_W0   = 0xb00187a0u;
+inline constexpr uint32_t  BlockTypeRegistry_getter_W4   = 0x9110e000u;
+inline constexpr uintptr_t BlockTypeRegistry_global      = 0x134d8438;
 } // namespace rva
 
 // Position-independent body patterns starting at +0x10 with PC-relative branches masked.
@@ -74,7 +81,7 @@ inline constexpr std::size_t LRP_SetupFogVtableSlot     = 20;
 inline constexpr uintptr_t DebugRenderer_ActiveFlag     = 0x08;   // uint8_t
 inline constexpr uintptr_t DebugRenderer_EnabledByte    = 0x01db; // uint8_t
 inline constexpr uintptr_t DebugRenderer_LineVec        = 0x50;   // PackedVertex*[3] (LineList, mode=4)
-inline constexpr uintptr_t DebugRenderer_TriVec         = 0x68;   // PackedVertex*[3] (TriangleList, mode=2)
+inline constexpr uintptr_t DebugRenderer_TriVec        = 0x68;    // PackedVertex*[3] (TriangleList, mode=2)
 inline constexpr uintptr_t LevelRenderer_DebugRenderer  = 0x2a8;  // LevelRenderer + 0x2a8 == DebugRenderer*
 inline constexpr uintptr_t LevelRenderer_LRPPtr         = 0x420;  // LevelRendererPlayer*
 inline constexpr uintptr_t RenderParams_ScreenContext   = 0x20;   // ScreenContext*
@@ -108,11 +115,10 @@ inline constexpr uintptr_t Actor_LevelPtr               = 0x1d0;  // Level*
 inline constexpr uintptr_t Actor_AABBCompPtr            = 0x210;  // AABBShapeComponent* (float[6] min/max)
 inline constexpr uintptr_t Actor_RotCompPtr             = 0x218;  // ActorRotationComponent* (pitch, yaw)
 inline constexpr uintptr_t Actor_VtGetCarriedItem       = 0x270;  // slot 78: const ItemStack*
-inline constexpr uintptr_t Actor_VtGetOffhandSlot       = 0x280;  // slot 80: const ItemStack*
 
 // ItemStackBase & Item fields (verified via 0x0ff81e94 / 0x0ff88c20 getters)
 inline constexpr uintptr_t ItemStack_ItemWeakPtr        = 0x08;   // WeakPtr<Item> -> Item**
-inline constexpr uintptr_t ItemStack_BlockPtr           = 0x18;   // const Block*
+inline constexpr uintptr_t ItemStack_BlockPtr           = 0x18;   // const Block* mBlock
 inline constexpr uintptr_t ItemStack_AuxValue           = 0x20;   // int16_t
 inline constexpr uintptr_t ItemStack_Count              = 0x22;   // uint8_t
 inline constexpr uintptr_t Item_RawNameId               = 0xa8;   // HashedString (+0x08 std::string at +0xb0)
@@ -125,12 +131,26 @@ inline constexpr uintptr_t BlockSource_VtGetChunk       = 0x148;  // slot 41: Le
 inline constexpr uintptr_t BlockSource_VtCheckPerms     = 0x1e8;  // slot 61: bool checkBlockPermissions(...)
 inline constexpr uintptr_t LevelChunk_AtomicStateByte   = 0xb8;   // uint8_t (7..9 == usable chunk)
 
-// Block & BlockType fields
+// Block & BlockType fields + verified BlockType primary vtable slots (0x130da380)
 inline constexpr uintptr_t Block_BlockTypePtr           = 0x68;   // const BlockType*
 inline constexpr uintptr_t Block_Data                   = 0x128;  // uint16_t mData
 inline constexpr uintptr_t BlockType_RawNameStr         = 0x90;   // std::string (e.g. "oak_stairs")
 inline constexpr uintptr_t BlockType_FullNameStr        = 0xd0;   // std::string (e.g. "minecraft:oak_stairs")
+inline constexpr uintptr_t BlockType_DefaultVisualShape = 0x188;  // AABB mVisualShape [0..1]^3
 inline constexpr uintptr_t BlockType_StatesTree         = 0x1b0;  // BlockStateInstance RB-tree
+inline constexpr uintptr_t BlockType_DefaultStatePtr    = 0x200;  // const Block* mDefaultState
+
+inline constexpr uintptr_t BlockType_VtGetOutline       = 0x40;   // slot 8: const AABB& getOutline(const Block&, const IConstBlockSource&, const BlockPos&, AABB&)
+inline constexpr uintptr_t BlockType_VtGetVisualShape   = 0x50;   // slot 10: const AABB& getVisualShape(const Block&, AABB&)
+inline constexpr uintptr_t BlockType_VtGetPlacementBlock= 0x278;  // slot 79: const Block& getPlacementBlock(const Actor&, const BlockPos&, FacingID, const Vec3&, int)
+
+// Read-only BlockTypeRegistry std::map<HashedString, std::shared_ptr<BlockType>> offsets (0x103e6394..0x103e64bc)
+inline constexpr uintptr_t Registry_MapRootPtr          = 0x08;   // __tree_node_base* root
+inline constexpr uintptr_t Registry_MapSize             = 0x10;   // size_t nodeCount
+inline constexpr uintptr_t RegistryNode_Left            = 0x00;   // const void*
+inline constexpr uintptr_t RegistryNode_Right           = 0x08;   // const void*
+inline constexpr uintptr_t RegistryNode_KeyStr          = 0x28;   // HashedString (+0x20) + 0x08 => std::string
+inline constexpr uintptr_t RegistryNode_BlockTypePtr    = 0x48;   // const BlockType* (__shared_ptr::__ptr_)
 } // namespace off
 
 // ============================================================================
@@ -166,4 +186,4 @@ inline std::string_view readLibcxxStringView(const void* strAddr) noexcept {
     return std::string_view(dataPtr, len);
 }
 
-} // namespace buildghost::sig
+} // namespace placepreview::sig

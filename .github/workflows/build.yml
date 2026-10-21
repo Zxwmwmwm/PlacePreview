@@ -23,11 +23,11 @@ jobs:
 
       - name: Run C++20 Host Unit & Integration Suite (ASan + UBSan)
         run: |
-          cmake -S . -B /tmp/bg-host-test -G Ninja \
+          cmake -S . -B /tmp/pp-host-test -G Ninja \
             -DCMAKE_BUILD_TYPE=Debug \
             -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer"
-          cmake --build /tmp/bg-host-test -j"$(nproc)"
-          ctest --test-dir /tmp/bg-host-test --output-on-failure
+          cmake --build /tmp/pp-host-test -j"$(nproc)"
+          ctest --test-dir /tmp/pp-host-test --output-on-failure
 
       - name: Setup Android NDK r29
         uses: nttld/setup-ndk@v1
@@ -49,7 +49,7 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release
           cmake --build /tmp/preloader-android/build --target preloader -j"$(nproc)"
 
-      - name: Build BuildGhost & Package LeviPack
+      - name: Build Place Preview & Package LeviPack
         env:
           ANDROID_NDK_HOME: ${{ steps.ndk.outputs.ndk-path }}
           PRELOADER_INCLUDE_DIR: /tmp/preloader-android/include
@@ -57,13 +57,13 @@ jobs:
           FMT_INCLUDE_DIR: /tmp/fmt-11.2.0/include
         run: |
           bash ./scripts/build.sh
-          ls -lh artifacts/BuildGhost.levipack artifacts/libBuildGhost.so
+          ls -lh artifacts/PlacePreview.levipack artifacts/libPlacePreview.so
 
       - name: Upload Build Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: BuildGhost-arm64-v8a
+          name: PlacePreview-arm64-v8a
           path: |
-            artifacts/BuildGhost.levipack
-            artifacts/libBuildGhost.so
+            artifacts/PlacePreview.levipack
+            artifacts/libPlacePreview.so
           if-no-files-found: error

@@ -7,7 +7,7 @@ PRELOADER_INC="${PRELOADER_INCLUDE_DIR:-/var/tmp/ws_preloader/include}"
 PRELOADER_LIB="${PRELOADER_LIBRARY:-/var/tmp/ws_preloader/libpreloader.so}"
 FMT_INC="${FMT_INCLUDE_DIR:-/var/tmp/fmt-11.2.0/include}"
 
-BUILD_DIR="${BUILD_DIR:-/tmp/buildghost-android-arm64}"
+BUILD_DIR="${BUILD_DIR:-/tmp/placepreview-android-arm64}"
 OUT_DIR="${REPO_ROOT}/artifacts"
 mkdir -p "${BUILD_DIR}" "${OUT_DIR}"
 
@@ -20,9 +20,9 @@ if command -v cmake >/dev/null 2>&1 && command -v ninja >/dev/null 2>&1; then
         -DPRELOADER_INCLUDE_DIR="${PRELOADER_INC}" \
         -DPRELOADER_LIBRARY="${PRELOADER_LIB}" \
         -DFMT_INCLUDE_DIR="${FMT_INC}"
-    cmake --build "${BUILD_DIR}" --target BuildGhost -j"$(nproc)"
-    cp -f "${BUILD_DIR}/libBuildGhost.so" "${OUT_DIR}/libBuildGhost.so"
-    "${NDK_ROOT}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip" --strip-unneeded "${OUT_DIR}/libBuildGhost.so"
+    cmake --build "${BUILD_DIR}" --target PlacePreview -j"$(nproc)"
+    cp -f "${BUILD_DIR}/libPlacePreview.so" "${OUT_DIR}/libPlacePreview.so"
+    "${NDK_ROOT}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip" --strip-unneeded "${OUT_DIR}/libPlacePreview.so"
 else
     CXX="${NDK_ROOT}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android28-clang++"
     STRIP="${NDK_ROOT}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip"
@@ -38,6 +38,7 @@ else
         "${REPO_ROOT}/src/MaterialPalette.cpp" \
         "${REPO_ROOT}/src/StateInspector.cpp" \
         "${REPO_ROOT}/src/PlacementResolver.cpp" \
+        "${REPO_ROOT}/src/PreviewAnimator.cpp" \
         "${REPO_ROOT}/src/GhostMesher.cpp" \
         "${REPO_ROOT}/src/EngineBridge.cpp" \
         "${REPO_ROOT}/src/ModMenuUi.cpp" \
@@ -48,11 +49,11 @@ else
         -Wl,--hash-style=gnu \
         -Wl,-z,max-page-size=16384 \
         "-Wl,--version-script=${REPO_ROOT}/exports.map" \
-        -o "${OUT_DIR}/libBuildGhost.so"
-    "${STRIP}" --strip-unneeded "${OUT_DIR}/libBuildGhost.so"
+        -o "${OUT_DIR}/libPlacePreview.so"
+    "${STRIP}" --strip-unneeded "${OUT_DIR}/libPlacePreview.so"
 fi
 
 python3 "${REPO_ROOT}/scripts/package_levipack.py" \
     "${REPO_ROOT}" \
-    "${OUT_DIR}/libBuildGhost.so" \
-    "${OUT_DIR}/BuildGhost.levipack"
+    "${OUT_DIR}/libPlacePreview.so" \
+    "${OUT_DIR}/PlacePreview.levipack"

@@ -1,10 +1,11 @@
-#include "buildghost/EngineBridge.hpp"
+#include "placepreview/EngineBridge.hpp"
 
-#include "buildghost/Config.hpp"
-#include "buildghost/GhostMesher.hpp"
-#include "buildghost/PlacementResolver.hpp"
-#include "buildghost/Signatures.hpp"
-#include "buildghost/StateInspector.hpp"
+#include "placepreview/Config.hpp"
+#include "placepreview/GhostMesher.hpp"
+#include "placepreview/PlacementResolver.hpp"
+#include "placepreview/PreviewAnimator.hpp"
+#include "placepreview/Signatures.hpp"
+#include "placepreview/StateInspector.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -16,6 +17,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 
 #if defined(__ANDROID__)
@@ -25,20 +27,18 @@
 #include <pl/memory/Vtable.hpp>
 #endif
 
-namespace buildghost {
+namespace placepreview {
 
 namespace {
 
 using FnDebugRenderEnd = void (*)(void* debugRenderer, void* renderParams);
 
-// Packed ChunkPos (x, z) passed to BlockSource::getChunk(const ChunkPos&)
 struct NativeChunkPos {
     int32_t x{0};
     int32_t z{0};
 };
 static_assert(sizeof(NativeChunkPos) == 8, "NativeChunkPos must be 8 bytes");
 
-// Packed ChunkBlockPos passed BY CONST REFERENCE (X1 = &localPos) to LevelChunk::getBlock(const ChunkBlockPos&)
 struct NativeChunkBlockPos {
     uint8_t x{0};
     uint8_t z{0};
@@ -58,9 +58,34 @@ using FnActorGetItemStack    = const void* (*)(const void* actor);
 using FnBsGetChunk           = const void* (*)(void* blockSource, const NativeChunkPos& cp);
 using FnBsCheckPermissions   = bool (*)(void* blockSource, void* actor, const BlockPos& pos, const void* itemStack, bool genParticle);
 
+// Verified BlockType primary vtable slots in 1.26.52.03 arm64-v8a:
+//   slot  8 (+0x40): const AABB* getOutline(const BlockType*, const Block*, const BlockSource*, const BlockPos*, AABB* out)
+//   slot 10 (+0x50): const AABB* getVisualShape(const BlockType*, const Block*, AABB* out)
+//   slot 79 (+0x278): const Block* getPlacementBlock(const BlockType*, const Actor*, const BlockPos*, uint8_t face, const Vec3* clickPos, int32_t itemVal)
+using FnBlockTypeGetOutline = const AABB* (*)(
+    const void* blockType,
+    const void* block,
+    const void* blockSource,
+    const BlockPos* pos,
+    AABB* outBuffer);
+
+using FnBlockTypeGetVisualShape = const AABB* (*)(
+    const void* blockType,
+    const void* block,
+    AABB* outBuffer);
+
+using FnBlockTypeGetPlacementBlock = const void* (*)(
+    const void* blockType,
+    const void* byActor,
+    const BlockPos* pos,
+    uint8_t face,
+    const Vec3* clickPos,
+    int32_t itemValue);
+
 struct ResolvedEngineApi {
     uintptr_t moduleBase{0};
     void* targetDebugRenderEnd{nullptr};
+    const void* blockTypeRegistry{nullptr};
     FnLevelChunkGetBlock lcGetBlock{nullptr};
     FnActorGetDimBlockSrc actorGetBlockSource{nullptr};
     FnPlayerIsCreative playerIsCreative{nullptr};
@@ -77,6 +102,23 @@ std::atomic<uint64_t> gFramesRendered{0};
 std::atomic<uint32_t> gActiveHookCalls{0};
 std::atomic<FnDebugRenderEnd> gOrigDebugRenderEnd{nullptr};
 ResolvedEngineApi gApi{};
+
+// Read-only BlockTypeRegistry cache populated lazily on render thread (zero engine heap allocations).
+struct RegistryCache {
+    std::size_t lastSeenCount{0};
+    std::unordered_map<std::string, const void*> map;
+
+    void clear() noexcept {
+        lastSeenCount = 0;
+        map.clear();
+    }
+};
+
+GhostMeshOutput gFrameMesh{};
+PreviewAnimator gAnimator{};
+RegistryCache gRegistryCache{};
+std::chrono::steady_clock::time_point gLastFrameTime{};
+bool gHasLastFrameTime{false};
 
 #if defined(__ANDROID__)
 std::unique_ptr<pl::memory::HookHandle> gHookRenderEnd;
@@ -114,6 +156,15 @@ FnPtr readVtableFn(const void* obj, uintptr_t vtableByteOffset) noexcept {
     return fn;
 }
 
+std::string lowerCopyAscii(std::string_view sv) {
+    std::string out;
+    out.reserve(sv.size());
+    for (char c : sv) {
+        out.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+    }
+    return out;
+}
+
 std::string readHashedString(const void* hashedStrAddr) {
     if (!sig::isValidUserAddress(hashedStrAddr, alignof(void*))) return {};
     const auto sv = sig::readLibcxxStringView(static_cast<const uint8_t*>(hashedStrAddr) + 0x08);
@@ -138,7 +189,129 @@ std::string readBlockIdentifierFromBlock(const void* blockPtr) {
     return {};
 }
 
-// Reads immutable BlockStateInstance RB-tree at BlockType + 0x1b0 to decode packed mData properties.
+// Walks BlockTypeRegistry's std::map<HashedString, shared_ptr<BlockType>> strictly read-only
+// using a bounded iterative stack whenever world addon count changes.
+const void* lookupNativeBlockType(std::string_view fullBlockId) {
+    if (!gApi.blockTypeRegistry || fullBlockId.empty()) {
+        return nullptr;
+    }
+
+    std::size_t treeCount = 0;
+    const void* rootNode = nullptr;
+    if (!readFieldSafe(gApi.blockTypeRegistry, sig::off::Registry_MapRootPtr, rootNode) ||
+        !readFieldSafe(gApi.blockTypeRegistry, sig::off::Registry_MapSize, treeCount) ||
+        treeCount == 0 || treeCount > 32768 ||
+        !sig::isValidUserAddress(rootNode, alignof(void*))) {
+        return nullptr;
+    }
+
+    if (treeCount != gRegistryCache.lastSeenCount || gRegistryCache.map.empty()) {
+        gRegistryCache.map.clear();
+        gRegistryCache.map.reserve(treeCount + 64);
+
+        std::vector<const void*> stack;
+        stack.reserve(128);
+        stack.push_back(rootNode);
+
+        std::size_t visited = 0;
+        const std::size_t maxVisit = std::min<std::size_t>(treeCount * 2 + 64, 65536);
+        while (!stack.empty() && visited < maxVisit) {
+            const void* node = stack.back();
+            stack.pop_back();
+            if (!sig::isValidUserAddress(node, alignof(void*))) {
+                continue;
+            }
+            ++visited;
+
+            const auto keySv = sig::readLibcxxStringView(
+                static_cast<const uint8_t*>(node) + sig::off::RegistryNode_KeyStr);
+            const void* btPtr = nullptr;
+            if (!keySv.empty() &&
+                readFieldSafe(node, sig::off::RegistryNode_BlockTypePtr, btPtr) &&
+                sig::isValidUserAddress(btPtr, alignof(void*))) {
+                std::string k = lowerCopyAscii(keySv);
+                gRegistryCache.map.emplace(std::move(k), btPtr);
+            }
+
+            const void* left = nullptr;
+            const void* right = nullptr;
+            if (readFieldSafe(node, sig::off::RegistryNode_Left, left) &&
+                sig::isValidUserAddress(left, alignof(void*))) {
+                stack.push_back(left);
+            }
+            if (readFieldSafe(node, sig::off::RegistryNode_Right, right) &&
+                sig::isValidUserAddress(right, alignof(void*))) {
+                stack.push_back(right);
+            }
+        }
+        gRegistryCache.lastSeenCount = treeCount;
+    }
+
+    std::string query = lowerCopyAscii(fullBlockId);
+    auto it = gRegistryCache.map.find(query);
+    if (it != gRegistryCache.map.end()) {
+        return it->second;
+    }
+    if (query.find(':') == std::string::npos) {
+        it = gRegistryCache.map.find("minecraft:" + query);
+        if (it != gRegistryCache.map.end()) {
+            return it->second;
+        }
+    }
+    return nullptr;
+}
+
+bool queryLiveBlockWorldOutline(
+    const void* blockPtr,
+    const void* blockSource,
+    const BlockPos& pos,
+    AABB& outWorldBox) noexcept {
+
+    if (!sig::isValidUserAddress(blockPtr, alignof(void*))) {
+        return false;
+    }
+    const void* bt = nullptr;
+    if (!readFieldSafe(blockPtr, sig::off::Block_BlockTypePtr, bt) ||
+        !sig::isValidUserAddress(bt, alignof(void*))) {
+        return false;
+    }
+
+    // Primary path: verified slot 8 `BlockType::getOutline(bt, block, blockSource, &pos, &buf)`
+    // handles both vanilla C++ subclasses AND data-driven custom addon `BlockSelectionBoxComponent`!
+    const auto fnGetOutline = readVtableFn<FnBlockTypeGetOutline>(bt, sig::off::BlockType_VtGetOutline);
+    if (fnGetOutline) {
+        AABB buf{};
+        const AABB* ret = fnGetOutline(bt, blockPtr, blockSource, &pos, &buf);
+        const AABB* chosen = sig::isValidUserAddress(ret, 4) ? ret : &buf;
+        AABB candidate = *chosen;
+        if (std::isfinite(candidate.min.x) && std::isfinite(candidate.min.y) && std::isfinite(candidate.min.z) &&
+            std::isfinite(candidate.max.x) && std::isfinite(candidate.max.y) && std::isfinite(candidate.max.z)) {
+            candidate = candidate.normalized();
+            if (!candidate.isDegenerate() &&
+                candidate.sizeX() <= 3.0f && candidate.sizeY() <= 3.0f && candidate.sizeZ() <= 3.0f) {
+                outWorldBox = candidate;
+                return true;
+            }
+        }
+    }
+
+    // Secondary pure-stateless path: slot 10 `BlockType::getVisualShape(bt, block, &buf)` + world origin!
+    const auto fnVis = readVtableFn<FnBlockTypeGetVisualShape>(bt, sig::off::BlockType_VtGetVisualShape);
+    if (fnVis) {
+        AABB localBuf{};
+        const AABB* ret = fnVis(bt, blockPtr, &localBuf);
+        if (sig::isValidUserAddress(ret, 4)) {
+            AABB local = (*ret).normalized();
+            if (!local.isDegenerate() &&
+                local.sizeX() <= 3.0f && local.sizeY() <= 3.0f && local.sizeZ() <= 3.0f) {
+                outWorldBox = local.translated(pos.originVec());
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 void extractBlockStateProperties(const void* blockPtr, std::vector<BlockStateProperty>& outProps) {
     outProps.clear();
     if (!sig::isValidUserAddress(blockPtr, alignof(void*))) return;
@@ -180,7 +353,6 @@ void extractBlockStateProperties(const void* blockPtr, std::vector<BlockStatePro
             }
         }
 
-        // Advance in-order successor across libc++ std::__tree_node_base
         const void* right = nullptr;
         if (readFieldSafe(curr, 0x08, right) && right != nullptr && sig::isValidUserAddress(right, alignof(void*))) {
             curr = right;
@@ -257,17 +429,23 @@ HeldItemInput inspectItemStack(const void* stackPtr) {
     return out;
 }
 
-// Lock-free read-only IWorldQuery implementation backed directly by LevelChunk::getBlock.
-// Never mutates BlockSource::mTempEntityList or dispatches off-thread events!
 class LiveWorldQuery final : public IWorldQuery {
 public:
-    LiveWorldQuery(void* blockSource, void* actor, int minY, int maxY, float pitchDeg, float yawDeg) noexcept
+    LiveWorldQuery(
+        void* blockSource,
+        void* actor,
+        int minY,
+        int maxY,
+        float pitchDeg,
+        float yawDeg,
+        bool isSneaking) noexcept
         : mBlockSource(blockSource),
           mActor(actor),
           mMinY(minY),
           mMaxY(maxY),
           mPitchDeg(pitchDeg),
-          mYawDeg(yawDeg) {}
+          mYawDeg(yawDeg),
+          mIsSneaking(isSneaking) {}
 
     [[nodiscard]] int minBuildHeight() const noexcept override { return mMinY; }
     [[nodiscard]] int maxBuildHeight() const noexcept override { return mMaxY; }
@@ -305,7 +483,8 @@ public:
     }
 
     [[nodiscard]] bool isAirBlock(const BlockPos& pos) const override {
-        const std::string_view stripped = StateInspector::stripNamespace(getBlockIdentifier(pos));
+        const std::string blockId = getBlockIdentifier(pos);
+        const std::string_view stripped = StateInspector::stripNamespace(blockId);
         return stripped.empty() || stripped == "air" || stripped == "cave_air" ||
                stripped == "void_air" || stripped == "light_block" || stripped == "structure_void";
     }
@@ -321,7 +500,8 @@ public:
             n == "deadbush" || n == "fire" || n == "soul_fire" || n == "vine" ||
             n == "glow_lichen" || n == "sculk_vein" || n == "structure_void" ||
             n == "light_block" || n == "seagrass" || n == "tall_seagrass" ||
-            n == "crimson_roots" || n == "warped_roots" || n == "nether_sprouts") {
+            n == "crimson_roots" || n == "warped_roots" || n == "nether_sprouts" ||
+            n == "pink_petals" || n == "leaf_litter" || n == "wildflowers") {
             return true;
         }
         if (n == "snow_layer") {
@@ -342,10 +522,31 @@ public:
         if (!blk) return {};
         const std::string id = readBlockIdentifierFromBlock(blk);
         if (id.empty()) return {};
+
+        // Multi-part blocks use exact multi-sub-box raycast geometry (stairs, fences, walls, hoppers).
+        if (StateInspector::isStairBlock(id) ||
+            StateInspector::isFenceOrWallOrPane(id) ||
+            StateInspector::isDoorBlock(id) ||
+            StateInspector::isBedBlock(id) ||
+            StateInspector::stripNamespace(id) == "hopper") {
+            std::vector<BlockStateProperty> props;
+            extractBlockStateProperties(blk, props);
+            const OrientationSummary orient = StateInspector::decodeOrientation(
+                id, props, Facing::Up, Vec3{0.5f, 0.5f, 0.5f}, 0.0f, 0.0f, false);
+            return StateInspector::buildFallbackBlockBoxes(pos, id, orient);
+        }
+
+        // Query live BlockType::getOutline directly on the world block for 100% accuracy across
+        // all vanilla blocks (signs, flowers, pots, candles, skulls, slabs, chests, crops) AND custom addons!
+        AABB liveBox{};
+        if (queryLiveBlockWorldOutline(blk, mBlockSource, pos, liveBox)) {
+            return {liveBox};
+        }
+
         std::vector<BlockStateProperty> props;
         extractBlockStateProperties(blk, props);
         const OrientationSummary orient = StateInspector::decodeOrientation(
-            id, props, Facing::Up, Vec3{0.5f, 0.5f, 0.5f}, 0.0f, 0.0f);
+            id, props, Facing::Up, Vec3{0.5f, 0.5f, 0.5f}, 0.0f, 0.0f, false);
         return StateInspector::buildFallbackBlockBoxes(pos, id, orient);
     }
 
@@ -371,28 +572,40 @@ public:
                                         ? item.directBlockIdentifier
                                         : StateInspector::resolveSpecialItemBlockName(item.itemIdentifier, inOutFace);
 
-        // 1. Direct click on the inside face of a matching single half-slab merges in place!
+        // 1. Direct click on inside face of matching half-slab merges in place.
         if (StateInspector::isSlabBlock(placeId)) {
             const void* clickedBlk = getNativeBlockPtr(inOutPos);
-            if (clickedBlk) {
-                const std::string existingId = readBlockIdentifierFromBlock(clickedBlk);
-                if (existingId == placeId) {
-                    std::vector<BlockStateProperty> props;
-                    extractBlockStateProperties(clickedBlk, props);
-                    const OrientationSummary exOrient = StateInspector::decodeOrientation(
-                        existingId, props, Facing::Up, Vec3{0.5f, 0.5f, 0.5f}, 0.0f, 0.0f);
-                    if ((!exOrient.topHalf && inOutFace == Facing::Up) ||
-                        (exOrient.topHalf && inOutFace == Facing::Down)) {
+            if (clickedBlk && readBlockIdentifierFromBlock(clickedBlk) == placeId) {
+                std::vector<BlockStateProperty> props;
+                extractBlockStateProperties(clickedBlk, props);
+                const OrientationSummary exOrient = StateInspector::decodeOrientation(
+                    placeId, props, Facing::Up, Vec3{0.5f, 0.5f, 0.5f}, 0.0f, 0.0f, false);
+                if ((!exOrient.topHalf && inOutFace == Facing::Up) ||
+                    (exOrient.topHalf && inOutFace == Facing::Down)) {
+                    return true;
+                }
+            }
+        }
+
+        // 2. Candle cluster stacking (up to 4 matching candles in the same cell!).
+        if (StateInspector::isCandleBlock(placeId)) {
+            const void* clickedBlk = getNativeBlockPtr(inOutPos);
+            if (clickedBlk && readBlockIdentifierFromBlock(clickedBlk) == placeId) {
+                std::vector<BlockStateProperty> props;
+                extractBlockStateProperties(clickedBlk, props);
+                for (const auto& p : props) {
+                    if (p.name == "candles" && p.value < 3) {
                         return true;
                     }
                 }
             }
         }
 
-        // 2. Snow layer stacking on top of an existing <8-layer snow block.
+        // 3. Snow layer stacking (< 8 layers).
         if (StateInspector::stripNamespace(placeId) == "snow_layer") {
             const void* clickedBlk = getNativeBlockPtr(inOutPos);
-            if (clickedBlk && StateInspector::stripNamespace(readBlockIdentifierFromBlock(clickedBlk)) == "snow_layer") {
+            const std::string clickedId = clickedBlk ? readBlockIdentifierFromBlock(clickedBlk) : std::string{};
+            if (!clickedId.empty() && StateInspector::stripNamespace(clickedId) == "snow_layer") {
                 std::vector<BlockStateProperty> props;
                 extractBlockStateProperties(clickedBlk, props);
                 for (const auto& p : props) {
@@ -403,19 +616,29 @@ public:
             }
         }
 
-        // 3. If clicked block itself is replaceable (tall grass, water, snow_layer < 7), replace in place.
+        // 4. Replaceable world block clicked directly -> replaces in place!
+        //    Note: when clicking a non-solid replaceable block like `short_grass`, if the block
+        //    below is solid and `inOutFace` came from hitting the side of the grass tuft, vanilla
+        //    treats floor-resting items like signs/torches as resting on top of the floor (`Up`).
         if (isReplaceableBlock(inOutPos)) {
+            if (inOutFace != Facing::Down &&
+                !StateInspector::isNonSolidSupportBlock(getBlockIdentifier(inOutPos.offset(0, -1, 0)))) {
+                const BlockPos oppStep = facingStep(oppositeFacing(inOutFace));
+                const BlockPos behind = inOutPos.offset(oppStep.x, oppStep.y, oppStep.z);
+                if (StateInspector::isNonSolidSupportBlock(getBlockIdentifier(behind))) {
+                    inOutFace = Facing::Up;
+                }
+            }
             return true;
         }
 
-        // 4. Advance one block along `inOutFace`.
+        // 5. Advance one block along `inOutFace`.
         const BlockPos step = facingStep(inOutFace);
         const BlockPos target = inOutPos.offset(step.x, step.y, step.z);
         if (target.y < mMinY || target.y > mMaxY) {
             return false;
         }
 
-        // Allow either replaceable target cell OR adjacent matching half-slab merge!
         if (isReplaceableBlock(target)) {
             inOutPos = target;
             return true;
@@ -423,6 +646,19 @@ public:
         if (StateInspector::isSlabBlock(placeId) && getBlockIdentifier(target) == placeId) {
             inOutPos = target;
             return true;
+        }
+        if (StateInspector::isCandleBlock(placeId) && getBlockIdentifier(target) == placeId) {
+            const void* tBlk = getNativeBlockPtr(target);
+            if (tBlk) {
+                std::vector<BlockStateProperty> props;
+                extractBlockStateProperties(tBlk, props);
+                for (const auto& p : props) {
+                    if (p.name == "candles" && p.value < 3) {
+                        inOutPos = target;
+                        return true;
+                    }
+                }
+            }
         }
         return false;
     }
@@ -449,7 +685,7 @@ public:
     }
 
     bool computePlacedBlockStateAndBoxes(
-        const HeldItemInput& /*item*/,
+        const HeldItemInput& item,
         const std::string& resolvedBlockIdentifier,
         const BlockPos& placePos,
         Facing face,
@@ -457,20 +693,65 @@ public:
         std::string& outFinalBlockId,
         uint16_t& outStateData,
         std::vector<BlockStateProperty>& outProps,
-        std::vector<AABB>& outWorldBoxes) const override {
+        std::vector<AABB>& outWorldBoxes,
+        std::vector<OrientedBox>& outOrientedBoxes) const override {
 
         outFinalBlockId = resolvedBlockIdentifier;
         outStateData = 0;
         outProps.clear();
         outWorldBoxes.clear();
+        outOrientedBoxes.clear();
+
+        // Resolve live BlockType* directly from ItemStack::mBlock (+0x18) or read-only BlockTypeRegistry!
+        const void* targetBlockType = nullptr;
+        if (item.nativeItemStackPtr != 0) {
+            const auto* stackPtr = reinterpret_cast<const void*>(item.nativeItemStackPtr);
+            const void* directBlk = nullptr;
+            if (readFieldSafe(stackPtr, sig::off::ItemStack_BlockPtr, directBlk) &&
+                sig::isValidUserAddress(directBlk, alignof(void*))) {
+                const std::string directId = readBlockIdentifierFromBlock(directBlk);
+                if (directId == resolvedBlockIdentifier) {
+                    (void)readFieldSafe(directBlk, sig::off::Block_BlockTypePtr, targetBlockType);
+                }
+            }
+        }
+        if (!sig::isValidUserAddress(targetBlockType, alignof(void*))) {
+            targetBlockType = lookupNativeBlockType(resolvedBlockIdentifier);
+        }
+
+        // Call live BlockType::getPlacementBlock (slot 79, +0x278) to get exact placed Block* state!
+        const void* placedBlock = nullptr;
+        if (mActor && sig::isValidUserAddress(targetBlockType, alignof(void*))) {
+            const auto fnPlaceState = readVtableFn<FnBlockTypeGetPlacementBlock>(
+                targetBlockType, sig::off::BlockType_VtGetPlacementBlock);
+            if (fnPlaceState) {
+                const void* candidate = fnPlaceState(
+                    targetBlockType,
+                    mActor,
+                    &placePos,
+                    static_cast<uint8_t>(face),
+                    &subClickPos,
+                    item.auxValue);
+                if (sig::isValidUserAddress(candidate, alignof(void*))) {
+                    placedBlock = candidate;
+                    readFieldSafe(placedBlock, sig::off::Block_Data, outStateData);
+                    const std::string liveId = readBlockIdentifierFromBlock(placedBlock);
+                    if (!liveId.empty()) {
+                        outFinalBlockId = liveId;
+                    }
+                    extractBlockStateProperties(placedBlock, outProps);
+                }
+            }
+        }
 
         const OrientationSummary orient = StateInspector::decodeOrientation(
-            resolvedBlockIdentifier, {}, face, subClickPos, mPitchDeg, mYawDeg);
+            outFinalBlockId, outProps, face, subClickPos, mPitchDeg, mYawDeg, mIsSneaking);
 
-        // Snow layer stacking height preview when adding onto an existing snow_layer!
-        if (StateInspector::stripNamespace(resolvedBlockIdentifier) == "snow_layer") {
+        // 1. Snow layer stacking height preview
+        if (StateInspector::stripNamespace(outFinalBlockId) == "snow_layer") {
             const void* existing = getNativeBlockPtr(placePos);
-            if (existing && StateInspector::stripNamespace(readBlockIdentifierFromBlock(existing)) == "snow_layer") {
+            const std::string existingId = existing ? readBlockIdentifierFromBlock(existing) : std::string{};
+            if (!existingId.empty() && StateInspector::stripNamespace(existingId) == "snow_layer") {
                 std::vector<BlockStateProperty> exProps;
                 extractBlockStateProperties(existing, exProps);
                 for (const auto& p : exProps) {
@@ -485,8 +766,27 @@ public:
             }
         }
 
-        // Dynamic neighbor-aware Corner Stairs (Outer & Inner corners live at 60-120 FPS!)
-        if (StateInspector::isStairBlock(resolvedBlockIdentifier)) {
+        // 2. Candle cluster stacking preview (1..4 candles!)
+        if (StateInspector::isCandleBlock(outFinalBlockId)) {
+            int newCount = 1;
+            const void* existing = getNativeBlockPtr(placePos);
+            if (existing && readBlockIdentifierFromBlock(existing) == outFinalBlockId) {
+                std::vector<BlockStateProperty> exProps;
+                extractBlockStateProperties(existing, exProps);
+                for (const auto& p : exProps) {
+                    if (p.name == "candles") {
+                        newCount = std::clamp(p.value + 2, 1, 4);
+                        break;
+                    }
+                }
+            }
+            outStateData = static_cast<uint16_t>(newCount);
+            outWorldBoxes = StateInspector::buildCandleClusterWorldBoxes(placePos, newCount);
+            return true;
+        }
+
+        // 3. Dynamic neighbor-aware Corner Stairs
+        if (StateInspector::isStairBlock(outFinalBlockId)) {
             auto inspectNeighborStair = [&](const BlockPos& np, Facing& outDir) -> bool {
                 const void* nb = getNativeBlockPtr(np);
                 if (!nb) return false;
@@ -495,7 +795,7 @@ public:
                 std::vector<BlockStateProperty> nProps;
                 extractBlockStateProperties(nb, nProps);
                 const OrientationSummary nOrient = StateInspector::decodeOrientation(
-                    nid, nProps, Facing::Up, Vec3{0.5f, 0.5f, 0.5f}, 0.0f, 0.0f);
+                    nid, nProps, Facing::Up, Vec3{0.5f, 0.5f, 0.5f}, 0.0f, 0.0f, false);
                 if (nOrient.topHalf != orient.topHalf) return false;
                 outDir = nOrient.facing;
                 return true;
@@ -519,8 +819,8 @@ public:
             return true;
         }
 
-        // Dynamic neighbor-aware Walls, Fences, Glass Panes, & Iron Bars
-        if (StateInspector::isFenceOrWallOrPane(resolvedBlockIdentifier)) {
+        // 4. Dynamic neighbor-aware Walls, Fences, Glass Panes, & Iron Bars
+        if (StateInspector::isFenceOrWallOrPane(outFinalBlockId)) {
             auto connectsTo = [&](const BlockPos& np) -> bool {
                 const std::string nid = getBlockIdentifier(np);
                 if (nid.empty()) return false;
@@ -540,11 +840,36 @@ public:
                                                  (cW ? 4u : 0u) |
                                                  (cE ? 8u : 0u));
             outWorldBoxes = StateInspector::buildConnectedPostWorldBoxes(
-                placePos, resolvedBlockIdentifier, cN, cS, cW, cE);
+                placePos, outFinalBlockId, cN, cS, cW, cE);
             return true;
         }
 
-        outWorldBoxes = StateInspector::buildFallbackBlockBoxes(placePos, resolvedBlockIdentifier, orient);
+        // 5. True 3D Oriented Models (16-angle standing signs, hanging signs, banners, skulls,
+        //    angled wall torches, slanted lecterns) + multi-part models (hoppers, anvils, gates,
+        //    cauldrons, campfires, lanterns, brewing stands, decorated pots)!
+        outOrientedBoxes = StateInspector::buildSpecialOrientedBoxes(placePos, outFinalBlockId, orient);
+        if (!outOrientedBoxes.empty()) {
+            outWorldBoxes = StateInspector::buildFallbackBlockBoxes(placePos, outFinalBlockId, orient);
+            return true;
+        }
+
+        const auto multiFallback = StateInspector::buildFallbackBlockBoxes(placePos, outFinalBlockId, orient);
+        if (multiFallback.size() > 1) {
+            outWorldBoxes = multiFallback;
+            return true;
+        }
+
+        // 6. Live Engine Outline Query (`BlockType::getOutline` on the exact placed `const Block*`!)
+        //    Covers ALL 1,150+ vanilla blocks AND 100% of custom addon blocks with exact sub-voxel bounds!
+        if (placedBlock != nullptr) {
+            AABB liveWorldBox{};
+            if (queryLiveBlockWorldOutline(placedBlock, mBlockSource, placePos, liveWorldBox)) {
+                outWorldBoxes = {liveWorldBox};
+                return true;
+            }
+        }
+
+        outWorldBoxes = multiFallback;
         return true;
     }
 
@@ -564,12 +889,10 @@ private:
     int mMaxY{319};
     float mPitchDeg{0.0f};
     float mYawDeg{0.0f};
+    bool mIsSneaking{false};
     mutable NativeChunkPos mCachedChunkPos{INT32_MIN, INT32_MIN};
     mutable const void* mCachedChunkPtr{nullptr};
 };
-
-// Reusable render-thread buffers (zero per-frame heap allocations during steady gameplay).
-GhostMeshOutput gFrameMesh{};
 
 void onPostDebugRenderEnd(void* debugRenderer, void* renderParams, FnDebugRenderEnd orig) {
     if (!orig || !sig::isValidUserAddress(debugRenderer, alignof(void*)) ||
@@ -579,17 +902,26 @@ void onPostDebugRenderEnd(void* debugRenderer, void* renderParams, FnDebugRender
 
     gFramesEvaluated.fetch_add(1, std::memory_order_relaxed);
 
+    const auto now = std::chrono::steady_clock::now();
+    float dtSeconds = 1.0f / 60.0f;
+    if (gHasLastFrameTime) {
+        dtSeconds = std::chrono::duration<float>(now - gLastFrameTime).count();
+    }
+    gLastFrameTime = now;
+    gHasLastFrameTime = true;
+
     const ModConfig cfg = ConfigManager::instance().snapshot();
     if (!cfg.enabled) {
+        gAnimator.reset();
         return;
     }
 
-    // Obtain LevelRendererPlayer* via parent LevelRenderer object (debugRenderer - 0x2a8).
     auto* dbgBytes = static_cast<uint8_t*>(debugRenderer);
     void* levelRenderer = dbgBytes - sig::off::LevelRenderer_DebugRenderer;
     void* lrp = nullptr;
     if (!readFieldSafe(levelRenderer, sig::off::LevelRenderer_LRPPtr, lrp) ||
         !sig::isValidUserAddress(lrp, alignof(void*))) {
+        gAnimator.reset();
         return;
     }
 
@@ -599,23 +931,23 @@ void onPostDebugRenderEnd(void* debugRenderer, void* renderParams, FnDebugRender
         !sig::isValidUserAddress(clientInst, alignof(void*)) ||
         !readFieldSafe(lrp, sig::off::LRP_LevelPtr, level) ||
         !sig::isValidUserAddress(level, alignof(void*))) {
+        gAnimator.reset();
         return;
     }
 
     const auto fnGetCamActor = readVtableFn<FnClientGetCamActor>(clientInst, sig::off::ClientInstance_VtGetCamActor);
     const auto fnGetHitResult = readVtableFn<FnLevelGetHitResult>(level, sig::off::Level_VtGetHitResult);
     if (!fnGetCamActor || !fnGetHitResult) {
+        gAnimator.reset();
         return;
     }
 
     void* camActor = fnGetCamActor(clientInst);
     if (!sig::isValidUserAddress(camActor, alignof(void*))) {
+        gAnimator.reset();
         return;
     }
 
-    // Resolve exact player GameType:
-    //   0 = Survival (5.5m), 1 = Creative (11.5m), 2 = Adventure (5.5m),
-    //   5 = Default (resolved via Level::getDefaultGameType()), 6 = Spectator (hidden).
     int32_t gameType = -1;
     if (gApi.entityGetPlayerGameType) {
         const auto* entityCtx = static_cast<const uint8_t*>(camActor) + sig::off::Actor_EntityContext;
@@ -633,8 +965,9 @@ void onPostDebugRenderEnd(void* debugRenderer, void* renderParams, FnDebugRender
         }
     }
 
-    // Immediate disappearance in Spectator mode (GameType == 6).
+    // Immediate disappearance in Spectator mode.
     if (gameType == 6) {
+        gAnimator.reset();
         return;
     }
 
@@ -653,10 +986,10 @@ void onPostDebugRenderEnd(void* debugRenderer, void* renderParams, FnDebugRender
         }
     }
     if (!sig::isValidUserAddress(blockSource, alignof(void*))) {
+        gAnimator.reset();
         return;
     }
 
-    // Dynamic world build bounds (supports Overworld, Nether, End, and custom BuildLimitChanger mods!).
     int16_t rawMaxH = 320;
     int16_t rawMinH = -64;
     readFieldSafe(blockSource, sig::off::BlockSource_MaxHeight, rawMaxH);
@@ -664,7 +997,6 @@ void onPostDebugRenderEnd(void* debugRenderer, void* renderParams, FnDebugRender
     const int minBuildY = (rawMinH >= -2048 && rawMinH < rawMaxH) ? static_cast<int>(rawMinH) : -64;
     const int maxBuildY = (rawMaxH > rawMinH && rawMaxH <= 4096) ? static_cast<int>(rawMaxH) - 1 : 319;
 
-    // Read player AABB & rotation components safely first so we always know the live camera ray!
     AABB playerAabb{};
     const void* aabbComp = nullptr;
     if (readFieldSafe(camActor, sig::off::Actor_AABBCompPtr, aabbComp) &&
@@ -697,31 +1029,12 @@ void onPostDebugRenderEnd(void* debugRenderer, void* renderParams, FnDebugRender
         }
     }
 
-    // Inspect mainhand & offhand items BEFORE world raycasting so non-block items cost 0 ns!
-    const auto fnCarried = readVtableFn<FnActorGetItemStack>(camActor, sig::off::Actor_VtGetCarriedItem);
-    const auto fnOffhand = readVtableFn<FnActorGetItemStack>(camActor, sig::off::Actor_VtGetOffhandSlot);
-
-    PlayerContextInput ctx{};
-    ctx.inWorld = true;
-    ctx.isSpectator = false;
-    ctx.isAdventureMode = isAdventure;
-    ctx.isSneaking = (playerAabb.sizeY() > 0.5f && playerAabb.sizeY() < 1.65f);
-    ctx.pitchDeg = pitchDeg;
-    ctx.yawDeg = yawDeg;
-    ctx.playerAabb = playerAabb;
-    if (fnCarried) ctx.mainhand = inspectItemStack(fnCarried(camActor));
-    if (fnOffhand) ctx.offhand = inspectItemStack(fnOffhand(camActor));
-
-    if (!ctx.mainhand.valid && (!cfg.enableOffhandPreview || !ctx.offhand.valid)) {
-        return;
-    }
-
-    // Extract live sub-tick interpolated render camera position from ScreenContext::mCameraData (+0xa8 -> +0x28).
     Vec3 playerEyePos = playerAabb.center();
+    const bool isSneaking = (playerAabb.sizeY() > 0.5f && playerAabb.sizeY() < 1.65f);
     if (playerAabb.volume() > 0.0f) {
         playerEyePos = Vec3{
             playerAabb.center().x,
-            playerAabb.min.y + (ctx.isSneaking ? 1.54f : 1.62f),
+            playerAabb.min.y + (isSneaking ? 1.54f : 1.62f),
             playerAabb.center().z
         };
     }
@@ -741,82 +1054,92 @@ void onPostDebugRenderEnd(void* debugRenderer, void* renderParams, FnDebugRender
         }
     }
 
-    // In 1st person, use exact 120-FPS interpolated camera eye origin; in 3rd person, aim from player eye!
-    const Vec3 rayOrigin = ((renderCameraPos - playerEyePos).lengthSq() <= 0.85f * 0.85f)
-                               ? renderCameraPos
-                               : playerEyePos;
-    const Vec3 lookDir = PlacementResolver::lookDirectionFromAngles(pitchDeg, yawDeg);
+    const auto fnCarried = readVtableFn<FnActorGetItemStack>(camActor, sig::off::Actor_VtGetCarriedItem);
+    PlayerContextInput ctx{};
+    ctx.inWorld = true;
+    ctx.isSpectator = false;
+    ctx.isAdventureMode = isAdventure;
+    ctx.isSneaking = isSneaking;
+    ctx.pitchDeg = pitchDeg;
+    ctx.yawDeg = yawDeg;
+    ctx.playerAabb = playerAabb;
+    if (fnCarried) {
+        ctx.mainhand = inspectItemStack(fnCarried(camActor));
+    }
 
-    LiveWorldQuery world(blockSource, camActor, minBuildY, maxBuildY, pitchDeg, yawDeg);
+    PlacementPreviewState rawPreview{};
+    if (ctx.mainhand.valid && ctx.mainhand.count > 0) {
+        const Vec3 rayOrigin = ((renderCameraPos - playerEyePos).lengthSq() <= 0.85f * 0.85f)
+                                   ? renderCameraPos
+                                   : playerEyePos;
+        const Vec3 lookDir = PlacementResolver::lookDirectionFromAngles(pitchDeg, yawDeg);
 
-    // Hybrid Center-Crosshair Raycast:
-    //  - First check if vanilla Level::getHitResult() already holds a fresh hit aligned closely
-    //    with the center gaze `lookDir` (e.g. Split Controls `+` crosshair / Mouse / Controller).
-    //  - Otherwise (Android Touch Mode without Split Controls, where vanilla HitResult only
-    //    updates under finger taps / movement joystick, or between 20-TPS ticks), trace the exact
-    //    live 60-120 FPS center camera ray `(rayOrigin, lookDir, maxReachBlocks)` directly!
-    bool usedAlignedEngineHit = false;
-    const void* hitRes = fnGetHitResult(level);
-    if (sig::isValidUserAddress(hitRes, alignof(void*))) {
-        int32_t hitType = 3;
-        uint8_t hitFaceByte = 1;
-        int32_t hitBlockRaw[3]{0, 0, 0};
-        float hitPosRaw[3]{0.0f, 0.0f, 0.0f};
-        uint8_t hitLiquidByte = 0;
-        uint8_t hitLiquidFaceByte = 1;
-        int32_t hitLiquidPosRaw[3]{0, 0, 0};
+        LiveWorldQuery world(blockSource, camActor, minBuildY, maxBuildY, pitchDeg, yawDeg, isSneaking);
 
-        readFieldSafe(hitRes, sig::off::HitResult_Type, hitType);
-        readFieldSafe(hitRes, sig::off::HitResult_Facing, hitFaceByte);
-        readFieldSafe(hitRes, sig::off::HitResult_BlockPos, hitBlockRaw);
-        readFieldSafe(hitRes, sig::off::HitResult_Pos, hitPosRaw);
-        readFieldSafe(hitRes, sig::off::HitResult_IsHitLiquid, hitLiquidByte);
-        readFieldSafe(hitRes, sig::off::HitResult_LiquidFacing, hitLiquidFaceByte);
-        readFieldSafe(hitRes, sig::off::HitResult_LiquidPos, hitLiquidPosRaw);
+        bool usedAlignedEngineHit = false;
+        const void* hitRes = fnGetHitResult(level);
+        if (sig::isValidUserAddress(hitRes, alignof(void*))) {
+            int32_t hitType = 3;
+            uint8_t hitFaceByte = 1;
+            int32_t hitBlockRaw[3]{0, 0, 0};
+            float hitPosRaw[3]{0.0f, 0.0f, 0.0f};
+            uint8_t hitLiquidByte = 0;
+            uint8_t hitLiquidFaceByte = 1;
+            int32_t hitLiquidPosRaw[3]{0, 0, 0};
 
-        if (hitType == 0 &&
-            std::isfinite(hitPosRaw[0]) &&
-            std::isfinite(hitPosRaw[1]) &&
-            std::isfinite(hitPosRaw[2])) {
-            const Vec3 hitVec{hitPosRaw[0], hitPosRaw[1], hitPosRaw[2]};
-            const Vec3 delta = hitVec - rayOrigin;
-            const float dist = delta.length();
-            if (dist > 0.05f && dist <= maxReachBlocks + 0.75f) {
-                const float cosAngle = (delta.x * lookDir.x + delta.y * lookDir.y + delta.z * lookDir.z) / dist;
-                if (cosAngle >= 0.996f) {
-                    ctx.raycast.hasBlockHit = true;
-                    ctx.raycast.hitFace = (hitFaceByte <= 5u) ? static_cast<Facing>(hitFaceByte) : Facing::Up;
-                    ctx.raycast.blockPos = {hitBlockRaw[0], hitBlockRaw[1], hitBlockRaw[2]};
-                    ctx.raycast.hitWorldPos = hitVec;
-                    ctx.raycast.hasLiquidHit = (hitLiquidByte != 0);
-                    ctx.raycast.liquidFace = (hitLiquidFaceByte <= 5u) ? static_cast<Facing>(hitLiquidFaceByte) : Facing::Up;
-                    ctx.raycast.liquidPos = {hitLiquidPosRaw[0], hitLiquidPosRaw[1], hitLiquidPosRaw[2]};
-                    ctx.raycast.liquidWorldPos = ctx.raycast.liquidPos.centerVec();
-                    usedAlignedEngineHit = true;
+            readFieldSafe(hitRes, sig::off::HitResult_Type, hitType);
+            readFieldSafe(hitRes, sig::off::HitResult_Facing, hitFaceByte);
+            readFieldSafe(hitRes, sig::off::HitResult_BlockPos, hitBlockRaw);
+            readFieldSafe(hitRes, sig::off::HitResult_Pos, hitPosRaw);
+            readFieldSafe(hitRes, sig::off::HitResult_IsHitLiquid, hitLiquidByte);
+            readFieldSafe(hitRes, sig::off::HitResult_LiquidFacing, hitLiquidFaceByte);
+            readFieldSafe(hitRes, sig::off::HitResult_LiquidPos, hitLiquidPosRaw);
+
+            if (hitType == 0 &&
+                std::isfinite(hitPosRaw[0]) &&
+                std::isfinite(hitPosRaw[1]) &&
+                std::isfinite(hitPosRaw[2])) {
+                const Vec3 hitVec{hitPosRaw[0], hitPosRaw[1], hitPosRaw[2]};
+                const Vec3 delta = hitVec - rayOrigin;
+                const float dist = delta.length();
+                if (dist > 0.05f && dist <= maxReachBlocks + 0.75f) {
+                    const float cosAngle = (delta.x * lookDir.x + delta.y * lookDir.y + delta.z * lookDir.z) / dist;
+                    if (cosAngle >= 0.996f) {
+                        ctx.raycast.hasBlockHit = true;
+                        ctx.raycast.hitFace = (hitFaceByte <= 5u) ? static_cast<Facing>(hitFaceByte) : Facing::Up;
+                        ctx.raycast.blockPos = {hitBlockRaw[0], hitBlockRaw[1], hitBlockRaw[2]};
+                        ctx.raycast.hitWorldPos = hitVec;
+                        ctx.raycast.hasLiquidHit = (hitLiquidByte != 0);
+                        ctx.raycast.liquidFace = (hitLiquidFaceByte <= 5u) ? static_cast<Facing>(hitLiquidFaceByte) : Facing::Up;
+                        ctx.raycast.liquidPos = {hitLiquidPosRaw[0], hitLiquidPosRaw[1], hitLiquidPosRaw[2]};
+                        ctx.raycast.liquidWorldPos = ctx.raycast.liquidPos.centerVec();
+                        usedAlignedEngineHit = true;
+                    }
                 }
             }
         }
+
+        if (!usedAlignedEngineHit) {
+            ctx.raycast = PlacementResolver::raycastWorld(rayOrigin, lookDir, maxReachBlocks, world);
+        }
+
+        if (ctx.raycast.hasBlockHit || ctx.raycast.hasLiquidHit) {
+            rawPreview = PlacementResolver::resolve(ctx, world, cfg);
+        }
     }
 
-    if (!usedAlignedEngineHit) {
-        ctx.raycast = PlacementResolver::raycastWorld(rayOrigin, lookDir, maxReachBlocks, world);
-    }
-
-    if (!ctx.raycast.hasBlockHit && !ctx.raycast.hasLiquidHit) {
-        return;
-    }
-
-    const PlacementPreviewState preview = PlacementResolver::resolve(ctx, world, cfg);
-    if (!preview.valid || preview.worldBoxes.empty()) {
+    const PlacementPreviewState animatedPreview = gAnimator.update(rawPreview, cfg, dtSeconds);
+    if (!animatedPreview.valid ||
+        (animatedPreview.worldBoxes.empty() && animatedPreview.orientedBoxes.empty())) {
         return;
     }
 
     const auto nowMs = std::chrono::duration_cast<std::chrono::milliseconds>(
-                           std::chrono::steady_clock::now().time_since_epoch())
+                           now.time_since_epoch())
                            .count();
     const float pulsePhase = static_cast<float>(nowMs % 3142LL) * 0.002f;
 
-    GhostMesher::buildMesh(preview, cfg, renderCameraPos, pulsePhase, gFrameMesh);
+    GhostMesher::buildMesh(animatedPreview, cfg, renderCameraPos, pulsePhase, gFrameMesh);
     if (gFrameMesh.empty()) {
         return;
     }
@@ -836,10 +1159,8 @@ void onPostDebugRenderEnd(void* debugRenderer, void* renderParams, FnDebugRender
         return;
     }
 
-    // First flush vanilla / upstream debug geometry on Mojang's own allocator.
     orig(debugRenderer, renderParams);
 
-    // Prevent recursive re-entry if another mod re-invokes detour chains.
     thread_local bool sInPostPass = false;
     if (sInPostPass || !gEnabled.load(std::memory_order_acquire)) {
         return;
@@ -852,7 +1173,6 @@ void onPostDebugRenderEnd(void* debugRenderer, void* renderParams, FnDebugRender
 
 #if defined(__ANDROID__)
 uintptr_t resolveMinecraftModuleBaseFast() noexcept {
-    // 1. Sub-microsecond (~2 us) Bionic linker phdr lookup — zero memory scanning!
     uintptr_t phdrBase = 0;
     dl_iterate_phdr(
         [](struct dl_phdr_info* info, size_t /*size*/, void* data) -> int {
@@ -875,7 +1195,6 @@ uintptr_t resolveMinecraftModuleBaseFast() noexcept {
         return phdrBase;
     }
 
-    // 2. Sub-millisecond vtable anchor lookup backup.
     const uintptr_t fogFn = pl::memory::resolveVtableFunction(
         sig::off::LRP_RttiName,
         sig::off::LRP_SetupFogVtableSlot,
@@ -937,7 +1256,6 @@ bool EngineBridge::installHooks() {
         return true;
     }
 
-    // Tier 1 (< 0.2 ms on UI Main Thread — ZERO full-library scans, ZERO ANR possibility!):
     const uintptr_t base = resolveMinecraftModuleBaseFast();
     if (base != 0) {
         ResolvedEngineApi fastApi{};
@@ -954,14 +1272,16 @@ bool EngineBridge::installHooks() {
         fastApi.entityGetPlayerGameType = reinterpret_cast<FnEntityGetGameType>(
             resolveRvaChecked(base, sig::rva::Entity_getPlayerGameType, sig::rva::Entity_getPlayerGameType_W10));
 
+        if (readInsnWord(base + sig::rva::BlockTypeRegistry_getter) == sig::rva::BlockTypeRegistry_getter_W0 &&
+            readInsnWord(base + sig::rva::BlockTypeRegistry_getter + 4) == sig::rva::BlockTypeRegistry_getter_W4) {
+            fastApi.blockTypeRegistry = reinterpret_cast<const void*>(base + sig::rva::BlockTypeRegistry_global);
+        }
+
         if (attachDebugRenderHookLocked(fastApi)) {
             return true;
         }
     }
 
-    // Tier 2 (Future Minecraft version where RVAs shifted):
-    // NEVER scan 328 MB synchronously on Android's UI Main Thread! Spawn a background worker
-    // thread so Mod::enable() returns instantaneously (< 0.2 ms) without stalling UI input.
     if (gAsyncFallbackThread.joinable()) {
         gAsyncFallbackThread.join();
     }
@@ -1023,7 +1343,6 @@ void EngineBridge::uninstallHooks() {
         gHooksInstalled.store(false, std::memory_order_release);
         gApi = {};
     }
-    // Ensure no render thread is still executing inside detourDebugRenderEnd before dlclose.
     for (int spin = 0; spin < 200 && gActiveHookCalls.load(std::memory_order_acquire) > 0; ++spin) {
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
@@ -1031,11 +1350,12 @@ void EngineBridge::uninstallHooks() {
     gHooksInstalled.store(false, std::memory_order_release);
 #endif
     gFrameMesh.clear();
+    gAnimator.reset();
+    gRegistryCache.clear();
+    gHasLastFrameTime = false;
 }
 
-void EngineBridge::notifyConfigUpdated(const ModConfig& /*cfg*/) noexcept {
-    // Live configuration snapshots are read lock-free on every rendered frame.
-}
+void EngineBridge::notifyConfigUpdated(const ModConfig& /*cfg*/) noexcept {}
 
 BridgeStats EngineBridge::stats() const noexcept {
     BridgeStats s{};
@@ -1062,7 +1382,7 @@ void EngineBridge::flushMeshIntoDebugRenderer(
     auto* lineVecPtrs   = reinterpret_cast<const PackedVertex**>(dbgBytes + sig::off::DebugRenderer_LineVec);
     auto* triVecPtrs    = reinterpret_cast<const PackedVertex**>(dbgBytes + sig::off::DebugRenderer_TriVec);
 
-    const uint8_t savedEnabled     = *enabledPtr;
+    const uint8_t savedEnabled       = *enabledPtr;
     const PackedVertex* savedLine[3] = {lineVecPtrs[0], lineVecPtrs[1], lineVecPtrs[2]};
     const PackedVertex* savedTri[3]  = {triVecPtrs[0],  triVecPtrs[1],  triVecPtrs[2]};
 
@@ -1104,4 +1424,4 @@ void EngineBridge::flushMeshIntoDebugRenderer(
     *activeFlagPtr = 0u;
 }
 
-} // namespace buildghost
+} // namespace placepreview

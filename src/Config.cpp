@@ -1,12 +1,13 @@
-#include "buildghost/Config.hpp"
+#include "placepreview/Config.hpp"
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <cstdlib>
 #include <fstream>
 #include <sstream>
 
-namespace buildghost {
+namespace placepreview {
 
 namespace {
 
@@ -97,14 +98,14 @@ void applyPresetInternal(ModConfig& cfg, std::string_view preset) {
         cfg.preset = "Frosted White";
         cfg.renderMode = "Shaded + Wireframe";
         cfg.colorMode = "Custom Accent";
-        cfg.fillOpacity = 0.36f;
-        cfg.wireframeOpacity = 0.62f;
+        cfg.fillOpacity = 0.34f;
+        cfg.wireframeOpacity = 0.68f;
         cfg.accentRed = 255;
         cfg.accentGreen = 255;
         cfg.accentBlue = 255;
+        cfg.accentAlpha = 255;
         cfg.directionalShading = true;
         cfg.showOrientationGuides = false;
-        cfg.showSubTargetPip = false;
         cfg.subtleBreathingPulse = false;
     } else if (preset == "Classic Cyan") {
         cfg.preset = "Classic Cyan";
@@ -115,15 +116,17 @@ void applyPresetInternal(ModConfig& cfg, std::string_view preset) {
         cfg.accentRed = 92;
         cfg.accentGreen = 224;
         cfg.accentBlue = 255;
+        cfg.accentAlpha = 255;
         cfg.directionalShading = true;
         cfg.showOrientationGuides = true;
-        cfg.subtleBreathingPulse = true;
-    } else if (preset == "Material Tint") {
-        cfg.preset = "Material Tint";
+        cfg.subtleBreathingPulse = false;
+    } else if (preset == "Material Adaptive" || preset == "Material Tint") {
+        cfg.preset = "Material Adaptive";
         cfg.renderMode = "Shaded + Wireframe";
         cfg.colorMode = "Material Adaptive";
         cfg.fillOpacity = 0.34f;
-        cfg.wireframeOpacity = 0.88f;
+        cfg.wireframeOpacity = 0.86f;
+        cfg.accentAlpha = 255;
         cfg.directionalShading = true;
         cfg.showOrientationGuides = false;
         cfg.subtleBreathingPulse = false;
@@ -131,11 +134,12 @@ void applyPresetInternal(ModConfig& cfg, std::string_view preset) {
         cfg.preset = "Crisp Wireframe";
         cfg.renderMode = "Wireframe Only";
         cfg.colorMode = "Custom Accent";
-        cfg.fillOpacity = 0.10f;
+        cfg.fillOpacity = 0.12f;
         cfg.wireframeOpacity = 0.94f;
         cfg.accentRed = 255;
         cfg.accentGreen = 255;
         cfg.accentBlue = 255;
+        cfg.accentAlpha = 255;
         cfg.showOrientationGuides = false;
         cfg.subtleBreathingPulse = false;
     } else if (preset == "Subtle Minimal") {
@@ -147,19 +151,20 @@ void applyPresetInternal(ModConfig& cfg, std::string_view preset) {
         cfg.accentRed = 255;
         cfg.accentGreen = 255;
         cfg.accentBlue = 255;
+        cfg.accentAlpha = 255;
         cfg.directionalShading = true;
         cfg.showOrientationGuides = false;
-        cfg.showSubTargetPip = false;
         cfg.subtleBreathingPulse = false;
     } else if (preset == "High Contrast") {
         cfg.preset = "High Contrast";
         cfg.renderMode = "Shaded + Wireframe";
         cfg.colorMode = "Custom Accent";
-        cfg.fillOpacity = 0.42f;
+        cfg.fillOpacity = 0.40f;
         cfg.wireframeOpacity = 1.00f;
         cfg.accentRed = 80;
         cfg.accentGreen = 255;
         cfg.accentBlue = 176;
+        cfg.accentAlpha = 255;
         cfg.directionalShading = true;
         cfg.showOrientationGuides = true;
         cfg.subtleBreathingPulse = true;
@@ -175,13 +180,60 @@ ConfigManager& ConfigManager::instance() noexcept {
     return mgr;
 }
 
+bool ConfigManager::parseHexColor(
+    std::string_view raw,
+    int& outR,
+    int& outG,
+    int& outB,
+    int& outA) noexcept {
+
+    std::string s = trimCopy(raw);
+    if (!s.empty() && s.front() == '#') {
+        s.erase(0, 1);
+    } else if (s.size() > 2 && s[0] == '0' && (s[1] == 'x' || s[1] == 'X')) {
+        s.erase(0, 2);
+    }
+
+    if (s.size() != 6 && s.size() != 8) {
+        return false;
+    }
+    for (char c : s) {
+        if (std::isxdigit(static_cast<unsigned char>(c)) == 0) {
+            return false;
+        }
+    }
+
+    char* endPtr = nullptr;
+    const unsigned long val = std::strtoul(s.c_str(), &endPtr, 16);
+    if (endPtr != s.c_str() + s.size()) {
+        return false;
+    }
+
+    if (s.size() == 8) {
+        // #AARRGGBB native LeviLauncher ModMenu Color Picker format:
+        outA = static_cast<int>((val >> 24u) & 0xFFul);
+        outR = static_cast<int>((val >> 16u) & 0xFFul);
+        outG = static_cast<int>((val >> 8u) & 0xFFul);
+        outB = static_cast<int>(val & 0xFFul);
+    } else {
+        // #RRGGBB 6-digit hex shorthand:
+        outA = 255;
+        outR = static_cast<int>((val >> 16u) & 0xFFul);
+        outG = static_cast<int>((val >> 8u) & 0xFFul);
+        outB = static_cast<int>(val & 0xFFul);
+    }
+    return true;
+}
+
 void ConfigManager::clampConfig(ModConfig& cfg) noexcept {
-    cfg.schemaVersion = 2;
+    cfg.schemaVersion = 3;
     cfg.fillOpacity = std::clamp(cfg.fillOpacity, 0.05f, 0.85f);
     cfg.wireframeOpacity = std::clamp(cfg.wireframeOpacity, 0.10f, 1.00f);
     cfg.accentRed = std::clamp(cfg.accentRed, 0, 255);
     cfg.accentGreen = std::clamp(cfg.accentGreen, 0, 255);
     cfg.accentBlue = std::clamp(cfg.accentBlue, 0, 255);
+    cfg.accentAlpha = std::clamp(cfg.accentAlpha, 25, 255);
+    cfg.animationSpeed = std::clamp(cfg.animationSpeed, 4.0f, 36.0f);
 
     if (cfg.renderMode != "Shaded + Wireframe" &&
         cfg.renderMode != "Translucent Fill" &&
@@ -193,9 +245,12 @@ void ConfigManager::clampConfig(ModConfig& cfg) noexcept {
         cfg.colorMode = "Custom Accent";
     }
 
+    if (cfg.preset == "Material Tint") {
+        cfg.preset = "Material Adaptive";
+    }
     if (cfg.preset != "Frosted White" &&
         cfg.preset != "Classic Cyan" &&
-        cfg.preset != "Material Tint" &&
+        cfg.preset != "Material Adaptive" &&
         cfg.preset != "Crisp Wireframe" &&
         cfg.preset != "Subtle Minimal" &&
         cfg.preset != "High Contrast" &&
@@ -207,7 +262,7 @@ void ConfigManager::clampConfig(ModConfig& cfg) noexcept {
 void ConfigManager::init(const std::filesystem::path& configDir) {
     std::error_code ec;
     std::filesystem::create_directories(configDir, ec);
-    const std::filesystem::path target = configDir / "buildghost.json";
+    const std::filesystem::path target = configDir / "placepreview.json";
     {
         std::lock_guard<std::mutex> lock(mutex_);
         configFilePath_ = target;
@@ -253,43 +308,57 @@ void ConfigManager::applyKeyValue(std::string_view key, std::string_view value) 
         std::lock_guard<std::mutex> lock(mutex_);
         if (key == "preset") {
             applyPresetInternal(config_, value);
-        } else {
-            if (key == "enabled") {
-                config_.enabled = parseBoolValue(value, config_.enabled);
-            } else if (key == "renderMode") {
-                config_.renderMode = trimCopy(value);
+        } else if (key == "previewColor") {
+            int r = config_.accentRed;
+            int g = config_.accentGreen;
+            int b = config_.accentBlue;
+            int a = config_.accentAlpha;
+            if (parseHexColor(value, r, g, b, a)) {
+                config_.accentRed = r;
+                config_.accentGreen = g;
+                config_.accentBlue = b;
+                config_.accentAlpha = a;
+                config_.colorMode = "Custom Accent";
                 config_.preset = "Custom";
-            } else if (key == "colorMode") {
-                config_.colorMode = trimCopy(value);
-                config_.preset = "Custom";
-            } else if (key == "fillOpacity") {
-                config_.fillOpacity = parseFloatValue(value, config_.fillOpacity);
-                config_.preset = "Custom";
-            } else if (key == "wireframeOpacity") {
-                config_.wireframeOpacity = parseFloatValue(value, config_.wireframeOpacity);
-                config_.preset = "Custom";
-            } else if (key == "accentRed") {
-                config_.accentRed = parseIntValue(value, config_.accentRed);
-                config_.preset = "Custom";
-            } else if (key == "accentGreen") {
-                config_.accentGreen = parseIntValue(value, config_.accentGreen);
-                config_.preset = "Custom";
-            } else if (key == "accentBlue") {
-                config_.accentBlue = parseIntValue(value, config_.accentBlue);
-                config_.preset = "Custom";
-            } else if (key == "directionalShading") {
-                config_.directionalShading = parseBoolValue(value, config_.directionalShading);
-            } else if (key == "showOrientationGuides") {
-                config_.showOrientationGuides = parseBoolValue(value, config_.showOrientationGuides);
-            } else if (key == "showSubTargetPip") {
-                config_.showSubTargetPip = parseBoolValue(value, config_.showSubTargetPip);
-            } else if (key == "subtleBreathingPulse") {
-                config_.subtleBreathingPulse = parseBoolValue(value, config_.subtleBreathingPulse);
-            } else if (key == "enableOffhandPreview") {
-                config_.enableOffhandPreview = parseBoolValue(value, config_.enableOffhandPreview);
-            } else if (key == "hideOnInteractiveWithoutSneak") {
-                config_.hideOnInteractiveWithoutSneak = parseBoolValue(value, config_.hideOnInteractiveWithoutSneak);
             }
+        } else if (key == "enabled") {
+            config_.enabled = parseBoolValue(value, config_.enabled);
+        } else if (key == "renderMode") {
+            config_.renderMode = trimCopy(value);
+            config_.preset = "Custom";
+        } else if (key == "colorMode") {
+            config_.colorMode = trimCopy(value);
+            config_.preset = "Custom";
+        } else if (key == "fillOpacity") {
+            config_.fillOpacity = parseFloatValue(value, config_.fillOpacity);
+            config_.preset = "Custom";
+        } else if (key == "wireframeOpacity") {
+            config_.wireframeOpacity = parseFloatValue(value, config_.wireframeOpacity);
+            config_.preset = "Custom";
+        } else if (key == "accentRed") {
+            config_.accentRed = parseIntValue(value, config_.accentRed);
+            config_.colorMode = "Custom Accent";
+            config_.preset = "Custom";
+        } else if (key == "accentGreen") {
+            config_.accentGreen = parseIntValue(value, config_.accentGreen);
+            config_.colorMode = "Custom Accent";
+            config_.preset = "Custom";
+        } else if (key == "accentBlue") {
+            config_.accentBlue = parseIntValue(value, config_.accentBlue);
+            config_.colorMode = "Custom Accent";
+            config_.preset = "Custom";
+        } else if (key == "smoothAnimation") {
+            config_.smoothAnimation = parseBoolValue(value, config_.smoothAnimation);
+        } else if (key == "animationSpeed") {
+            config_.animationSpeed = parseFloatValue(value, config_.animationSpeed);
+        } else if (key == "directionalShading") {
+            config_.directionalShading = parseBoolValue(value, config_.directionalShading);
+        } else if (key == "showOrientationGuides") {
+            config_.showOrientationGuides = parseBoolValue(value, config_.showOrientationGuides);
+        } else if (key == "subtleBreathingPulse") {
+            config_.subtleBreathingPulse = parseBoolValue(value, config_.subtleBreathingPulse);
+        } else if (key == "hideOnInteractiveWithoutSneak") {
+            config_.hideOnInteractiveWithoutSneak = parseBoolValue(value, config_.hideOnInteractiveWithoutSneak);
         }
         clampConfig(config_);
         savePath = configFilePath_;
@@ -318,22 +387,6 @@ bool ConfigManager::loadFromFile(const std::filesystem::path& path) {
     std::ostringstream ss;
     ss << in.rdbuf();
     const std::string raw = ss.str();
-    std::string verStr;
-    const int diskSchema = extractJsonFieldRaw(raw, "schemaVersion", verStr) ? parseIntValue(verStr, 1) : 1;
-    if (diskSchema < 2) {
-        // Auto-upgrade pre-v2 config files on disk to clean Frosted White v2 defaults while keeping enabled flag.
-        ModConfig upgraded{};
-        if (extractJsonFieldRaw(raw, "enabled", verStr)) {
-            upgraded.enabled = parseBoolValue(verStr, true);
-        }
-        clampConfig(upgraded);
-        {
-            std::lock_guard<std::mutex> lock(mutex_);
-            config_ = upgraded;
-        }
-        (void)saveToFile(path);
-        return true;
-    }
     const ModConfig parsed = parseJson(raw);
     {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -363,16 +416,14 @@ std::string ConfigManager::serializeJson(const ModConfig& cfg) {
        << "  \"preset\": \"" << escapeJson(cfg.preset) << "\",\n"
        << "  \"renderMode\": \"" << escapeJson(cfg.renderMode) << "\",\n"
        << "  \"colorMode\": \"" << escapeJson(cfg.colorMode) << "\",\n"
+       << "  \"previewColor\": \"" << escapeJson(cfg.previewColorHex()) << "\",\n"
        << "  \"fillOpacity\": " << cfg.fillOpacity << ",\n"
        << "  \"wireframeOpacity\": " << cfg.wireframeOpacity << ",\n"
-       << "  \"accentRed\": " << cfg.accentRed << ",\n"
-       << "  \"accentGreen\": " << cfg.accentGreen << ",\n"
-       << "  \"accentBlue\": " << cfg.accentBlue << ",\n"
+       << "  \"smoothAnimation\": " << (cfg.smoothAnimation ? "true" : "false") << ",\n"
+       << "  \"animationSpeed\": " << cfg.animationSpeed << ",\n"
        << "  \"directionalShading\": " << (cfg.directionalShading ? "true" : "false") << ",\n"
        << "  \"showOrientationGuides\": " << (cfg.showOrientationGuides ? "true" : "false") << ",\n"
-       << "  \"showSubTargetPip\": " << (cfg.showSubTargetPip ? "true" : "false") << ",\n"
        << "  \"subtleBreathingPulse\": " << (cfg.subtleBreathingPulse ? "true" : "false") << ",\n"
-       << "  \"enableOffhandPreview\": " << (cfg.enableOffhandPreview ? "true" : "false") << ",\n"
        << "  \"hideOnInteractiveWithoutSneak\": " << (cfg.hideOnInteractiveWithoutSneak ? "true" : "false") << "\n"
        << "}\n";
     return ss.str();
@@ -385,16 +436,28 @@ ModConfig ConfigManager::parseJson(std::string_view jsonText) {
     if (extractJsonFieldRaw(jsonText, "enabled", v)) cfg.enabled = parseBoolValue(v, cfg.enabled);
     if (extractJsonFieldRaw(jsonText, "renderMode", v)) cfg.renderMode = v;
     if (extractJsonFieldRaw(jsonText, "colorMode", v)) cfg.colorMode = v;
-    if (extractJsonFieldRaw(jsonText, "fillOpacity", v)) cfg.fillOpacity = parseFloatValue(v, cfg.fillOpacity);
-    if (extractJsonFieldRaw(jsonText, "wireframeOpacity", v)) cfg.wireframeOpacity = parseFloatValue(v, cfg.wireframeOpacity);
+    if (extractJsonFieldRaw(jsonText, "previewColor", v)) {
+        int r = cfg.accentRed;
+        int g = cfg.accentGreen;
+        int b = cfg.accentBlue;
+        int a = cfg.accentAlpha;
+        if (parseHexColor(v, r, g, b, a)) {
+            cfg.accentRed = r;
+            cfg.accentGreen = g;
+            cfg.accentBlue = b;
+            cfg.accentAlpha = a;
+        }
+    }
     if (extractJsonFieldRaw(jsonText, "accentRed", v)) cfg.accentRed = parseIntValue(v, cfg.accentRed);
     if (extractJsonFieldRaw(jsonText, "accentGreen", v)) cfg.accentGreen = parseIntValue(v, cfg.accentGreen);
     if (extractJsonFieldRaw(jsonText, "accentBlue", v)) cfg.accentBlue = parseIntValue(v, cfg.accentBlue);
+    if (extractJsonFieldRaw(jsonText, "fillOpacity", v)) cfg.fillOpacity = parseFloatValue(v, cfg.fillOpacity);
+    if (extractJsonFieldRaw(jsonText, "wireframeOpacity", v)) cfg.wireframeOpacity = parseFloatValue(v, cfg.wireframeOpacity);
+    if (extractJsonFieldRaw(jsonText, "smoothAnimation", v)) cfg.smoothAnimation = parseBoolValue(v, cfg.smoothAnimation);
+    if (extractJsonFieldRaw(jsonText, "animationSpeed", v)) cfg.animationSpeed = parseFloatValue(v, cfg.animationSpeed);
     if (extractJsonFieldRaw(jsonText, "directionalShading", v)) cfg.directionalShading = parseBoolValue(v, cfg.directionalShading);
     if (extractJsonFieldRaw(jsonText, "showOrientationGuides", v)) cfg.showOrientationGuides = parseBoolValue(v, cfg.showOrientationGuides);
-    if (extractJsonFieldRaw(jsonText, "showSubTargetPip", v)) cfg.showSubTargetPip = parseBoolValue(v, cfg.showSubTargetPip);
     if (extractJsonFieldRaw(jsonText, "subtleBreathingPulse", v)) cfg.subtleBreathingPulse = parseBoolValue(v, cfg.subtleBreathingPulse);
-    if (extractJsonFieldRaw(jsonText, "enableOffhandPreview", v)) cfg.enableOffhandPreview = parseBoolValue(v, cfg.enableOffhandPreview);
     if (extractJsonFieldRaw(jsonText, "hideOnInteractiveWithoutSneak", v)) {
         cfg.hideOnInteractiveWithoutSneak = parseBoolValue(v, cfg.hideOnInteractiveWithoutSneak);
     }
@@ -402,4 +465,4 @@ ModConfig ConfigManager::parseJson(std::string_view jsonText) {
     return cfg;
 }
 
-} // namespace buildghost
+} // namespace placepreview

@@ -1,11 +1,11 @@
-#include "buildghost/MaterialPalette.hpp"
-#include "buildghost/StateInspector.hpp"
+#include "placepreview/MaterialPalette.hpp"
+#include "placepreview/StateInspector.hpp"
 
 #include <array>
 #include <cctype>
 #include <string>
 
-namespace buildghost {
+namespace placepreview {
 
 namespace {
 
@@ -53,18 +53,16 @@ RgbaColor MaterialPalette::colorForBlock(std::string_view blockIdentifier, int a
         return {92, 224, 255, 255};
     }
 
-    // Bed uses 0..15 dye auxiliary data in Minecraft Bedrock.
     if (name == "bed") {
         return colorForDyeIndex(auxData);
     }
 
-    // Explicit color-prefixed blocks (wool, concrete, glass, terracotta, shulker, carpet, candle, banner).
     if (containsToken(name, "light_blue")) return {92, 188, 238, 255};
     if (containsToken(name, "light_gray") || containsToken(name, "silver_")) return {172, 174, 170, 255};
     if (containsToken(name, "magenta")) return {204, 88, 198, 255};
     if (containsToken(name, "pink") || containsToken(name, "cherry")) return {238, 168, 188, 255};
     if (containsToken(name, "pale_oak")) return {226, 220, 214, 255};
-    if (containsToken(name, "dark_oak")) return {112, 82, 54, 255};
+    if (containsToken(name, "dark_oak") || containsToken(name, "darkoak")) return {112, 82, 54, 255};
     if (containsToken(name, "spruce")) return {146, 108, 68, 255};
     if (containsToken(name, "birch")) return {228, 214, 164, 255};
     if (containsToken(name, "jungle")) return {190, 140, 104, 255};
@@ -75,17 +73,16 @@ RgbaColor MaterialPalette::colorForBlock(std::string_view blockIdentifier, int a
     if (containsToken(name, "warped")) return {54, 176, 164, 255};
     if (containsToken(name, "oak") || containsToken(name, "planks") || containsToken(name, "wood") ||
         containsToken(name, "log") || containsToken(name, "chest") || containsToken(name, "barrel") ||
-        containsToken(name, "lectern") || containsToken(name, "crafting") || containsToken(name, "ladder")) {
+        containsToken(name, "lectern") || containsToken(name, "crafting") || containsToken(name, "ladder") ||
+        containsToken(name, "sign")) {
         return {198, 160, 104, 255};
     }
 
-    // Copper oxidation states
     if (containsToken(name, "oxidized_copper") || containsToken(name, "oxidized_cut_copper")) return {84, 194, 162, 255};
     if (containsToken(name, "weathered_copper") || containsToken(name, "weathered_cut_copper")) return {112, 180, 138, 255};
     if (containsToken(name, "exposed_copper") || containsToken(name, "exposed_cut_copper")) return {176, 146, 124, 255};
     if (containsToken(name, "copper")) return {218, 132, 96, 255};
 
-    // Ores, gems, metals & redstone
     if (containsToken(name, "diamond")) return {94, 236, 232, 255};
     if (containsToken(name, "emerald") || containsToken(name, "slime")) return {82, 224, 118, 255};
     if (containsToken(name, "gold") || containsToken(name, "honey") || containsToken(name, "glowstone") ||
@@ -128,4 +125,4 @@ RgbaColor MaterialPalette::colorForBlock(std::string_view blockIdentifier, int a
     return {92, 224, 255, 255};
 }
 
-} // namespace buildghost
+} // namespace placepreview
