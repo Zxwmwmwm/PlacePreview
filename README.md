@@ -12,7 +12,7 @@ Smooth, accurate real-time 3D block placement preview mod (`preload-native`, `ar
   - Glides smoothly from block to block instead of popping instantaneously out of nowhere, morphs sub-block slab/rotation changes cleanly, and gently fades in and out when aiming at valid surfaces vs sky/out-of-reach targets.
 - **Interactive Slider Color Changer with Live Swatch Preview**:
   - Native Mod Menu `#AARRGGBB` slider & spectrum color picker with live visible color preview, quick style presets (`Frosted White`, `Classic Cyan`, `Material Adaptive`, `Crisp Wireframe`, `Subtle Minimal`, `High Contrast`), opacity controls, and clean Bedrock-only settings.
-- **60–120 FPS Center-Crosshair Tracking Across All Gamemodes**:
+- **60–120 FPS Center-Crosshair Tracking In both survival and creative Gamemodes**:
   - Works seamlessly on both Android Touch Mode and Split Controls across Creative (`11.5m`), Survival (`5.5m`), and Adventure (`5.5m`), hiding cleanly in Spectator mode.
 
 ## Building from Source
