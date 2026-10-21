@@ -2,6 +2,7 @@
 
 #include "placepreview/Types.hpp"
 
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -27,6 +28,7 @@ public:
         return stripNamespace(std::string_view(id));
     }
     static std::string_view stripNamespace(std::string&&) = delete;
+
     [[nodiscard]] static bool isDoorBlock(std::string_view id) noexcept;
     [[nodiscard]] static bool isBedBlock(std::string_view id) noexcept;
     [[nodiscard]] static bool isSlabBlock(std::string_view id) noexcept;
@@ -40,6 +42,10 @@ public:
     [[nodiscard]] static bool isBannerBlock(std::string_view id) noexcept;
     [[nodiscard]] static bool isSkullBlock(std::string_view id) noexcept;
     [[nodiscard]] static bool isCandleBlock(std::string_view id) noexcept;
+    [[nodiscard]] static bool isSeaPickleBlock(std::string_view id) noexcept;
+    [[nodiscard]] static bool isTurtleEggBlock(std::string_view id) noexcept;
+    [[nodiscard]] static bool isFlowerBedBlock(std::string_view id) noexcept;
+    [[nodiscard]] static bool isLiquidOrAirBlock(std::string_view id) noexcept;
     [[nodiscard]] static bool isPillarBlock(std::string_view id) noexcept;
     [[nodiscard]] static bool isSixWayBlock(std::string_view id) noexcept;
     [[nodiscard]] static bool isHorizontalDirectionalBlock(std::string_view id) noexcept;
@@ -49,8 +55,9 @@ public:
     [[nodiscard]] static bool isNonSolidSupportBlock(std::string_view id) noexcept;
     [[nodiscard]] static bool hasNonCollidingPlacement(std::string_view id) noexcept;
 
-    // Maps non-BlockItem placeable item identifiers to their exact placed block identifier
-    // (returns empty string for non-placeable tools, weapons, food, buckets, spawn eggs, etc.).
+    // Maps item OR block identifiers cleanly to the exact placed block identifier for `hitFace`
+    // (handles face-dependent swaps such as sign <-> wall_sign, standing_banner <-> wall_banner,
+    // item_frame -> frame, glow_item_frame -> glow_frame, painting, armor_stand, sea_pickle, etc.).
     [[nodiscard]] static std::string resolveSpecialItemBlockName(
         std::string_view itemIdentifier,
         Facing hitFace) noexcept;
@@ -98,10 +105,14 @@ public:
         const BlockPos& pos,
         int candleCount);
 
-    // Builds exact 3D rotated / multi-part OrientedBox geometry for blocks whose visual model
-    // rotates off-axis or differs from a plain bounding box (16-angle standing signs, hanging
-    // signs, banners, skulls, tilted wall torches, levers, slanted lecterns). Returns empty
-    // vector when axis-aligned `worldBoxes` already represent the block exactly.
+    [[nodiscard]] static std::vector<AABB> buildSeaPickleClusterWorldBoxes(
+        const BlockPos& pos,
+        int pickleCount);
+
+    [[nodiscard]] static std::vector<AABB> buildTurtleEggClusterWorldBoxes(
+        const BlockPos& pos,
+        int eggCount);
+
     [[nodiscard]] static std::vector<OrientedBox> buildSpecialOrientedBoxes(
         const BlockPos& pos,
         std::string_view blockIdentifier,

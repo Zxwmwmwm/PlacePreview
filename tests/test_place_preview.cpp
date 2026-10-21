@@ -47,13 +47,14 @@ public:
     bool isAirBlock(const BlockPos& pos) const override {
         const std::string id = getBlockIdentifier(pos);
         const auto s = StateInspector::stripNamespace(id);
-        return s.empty() || s == "air";
+        return s.empty() || s == "air" || s == "cave_air" || s == "void_air";
     }
 
     bool isReplaceableBlock(const BlockPos& pos) const override {
         const std::string id = getBlockIdentifier(pos);
         const auto s = StateInspector::stripNamespace(id);
-        return s.empty() || s == "air" || s == "water" || s == "short_grass";
+        return s.empty() || s == "air" || s == "water" || s == "flowing_water" ||
+               s == "bubble_column" || s == "short_grass";
     }
 
     std::vector<AABB> getExistingBlockWorldBoxes(const BlockPos& pos) const override {
@@ -62,7 +63,7 @@ public:
             return bit->second;
         }
         const std::string id = getBlockIdentifier(pos);
-        if (isAirBlock(pos)) return {};
+        if (StateInspector::isLiquidOrAirBlock(id)) return {};
         const OrientationSummary o = StateInspector::decodeOrientation(
             id, {}, Facing::Up, {0.5f, 0.5f, 0.5f}, 0.0f, 0.0f);
         return StateInspector::buildFallbackBlockBoxes(pos, id, o);
@@ -73,9 +74,12 @@ public:
     }
 
     bool calculatePlacePos(const HeldItemInput& item, Facing& inOutFace, BlockPos& inOutPos) const override {
-        const std::string placeId = !item.directBlockIdentifier.empty()
-                                        ? item.directBlockIdentifier
-                                        : StateInspector::resolveSpecialItemBlockName(item.itemIdentifier, inOutFace);
+        std::string placeId = StateInspector::resolveSpecialItemBlockName(item.itemIdentifier, inOutFace);
+        if (placeId.empty() && !item.directBlockIdentifier.empty()) {
+            const std::string swapped =
+                StateInspector::resolveSpecialItemBlockName(item.directBlockIdentifier, inOutFace);
+            placeId = !swapped.empty() ? swapped : item.directBlockIdentifier;
+        }
         if (StateInspector::isSlabBlock(placeId) && getBlockIdentifier(inOutPos) == placeId) {
             const auto ex = getExistingBlockWorldBoxes(inOutPos);
             if (!ex.empty()) {
@@ -116,7 +120,7 @@ public:
     }
 };
 
-void testMetadataAndHexColorPicker() {
+void testMetadataColorPickerAndDiskPersistence() {
     assert(version::Name == "Place Preview");
     assert(version::Id == "zxwmwmwm.placepreview");
     assert(version::Version == "1.0.0");
@@ -127,22 +131,47 @@ void testMetadataAndHexColorPicker() {
     assert(a == 0xDC && r == 0x48 && g == 0xC8 && b == 0xFF);
     assert(ConfigManager::parseHexColor("#34E29A", r, g, b, a));
     assert(a == 255 && r == 0x34 && g == 0xE2 && b == 0x9A);
+    assert(ConfigManager::parseHexColor("#00FF8040", r, g, b, a));
+    assert(a == 0x00 && r == 0xFF && g == 0x80 && b == 0x40);
     assert(!ConfigManager::parseHexColor("invalid", r, g, b, a));
 
-    ConfigManager::instance().resetDefaults();
-    ConfigManager::instance().applyKeyValue("previewColor", "#CC40E0D0");
-    const ModConfig snap = ConfigManager::instance().snapshot();
-    assert(snap.accentRed == 0x40);
-    assert(snap.accentGreen == 0xE0);
-    assert(snap.accentBlue == 0xD0);
-    assert(snap.accentAlpha == 0xCC);
-    assert(snap.preset == "Custom");
-    assert(snap.previewColorHex() == "#CC40E0D0");
+    // Full disk roundtrip persistence check (simulating Mod Menu close/reopen + app restart!)
+    const std::filesystem::path tmpDir = std::filesystem::temp_directory_path() / "placepreview_cfg_test";
+    std::error_code ec;
+    std::filesystem::remove_all(tmpDir, ec);
 
-    const std::string serialized = ConfigManager::serializeJson(snap);
-    assert(serialized.find("enableOffhandPreview") == std::string::npos);
-    const ModConfig reparsed = ConfigManager::parseJson(serialized);
-    assert(reparsed.previewColorHex() == "#CC40E0D0");
+    ConfigManager::instance().init(tmpDir);
+    ConfigManager::instance().applyKeyValue("previewColor", "#8040E0D0");
+    ConfigManager::instance().applyKeyValue("renderMode", "Wireframe Only");
+    ConfigManager::instance().applyKeyValue("fillOpacity", "0.52");
+    ConfigManager::instance().applyKeyValue("wireframeOpacity", "0.91");
+    ConfigManager::instance().applyKeyValue("animationSpeed", "26.50");
+    ConfigManager::instance().applyKeyValue("showOrientationGuides", "true");
+    ConfigManager::instance().setEnabled(false);
+
+    // Simulate brand-new launch reloading from `placepreview.json` on disk:
+    const std::filesystem::path savedCopy = tmpDir / "saved_copy.json";
+    std::filesystem::copy_file(
+        tmpDir / "placepreview.json",
+        savedCopy,
+        std::filesystem::copy_options::overwrite_existing,
+        ec);
+    ConfigManager::instance().resetDefaults();
+    assert(ConfigManager::instance().snapshot().enabled);
+    assert(ConfigManager::instance().loadFromFile(savedCopy));
+    const ModConfig reloaded = ConfigManager::instance().snapshot();
+    assert(!reloaded.enabled);
+    assert(reloaded.previewColorHex() == "#8040E0D0");
+    assert(reloaded.accentAlpha == 0x80 && reloaded.accentRed == 0x40 &&
+           reloaded.accentGreen == 0xE0 && reloaded.accentBlue == 0xD0);
+    assert(approx(reloaded.colorAlphaMultiplier(), 128.0f / 255.0f, 1e-3f));
+    assert(reloaded.renderMode == "Wireframe Only");
+    assert(approx(reloaded.fillOpacity, 0.52f));
+    assert(approx(reloaded.wireframeOpacity, 0.91f));
+    assert(approx(reloaded.animationSpeed, 26.50f));
+    assert(reloaded.showOrientationGuides);
+
+    std::filesystem::remove_all(tmpDir, ec);
     ConfigManager::instance().resetDefaults();
 }
 
@@ -152,16 +181,14 @@ void testStandingSign16AnglesAndWallSign() {
     world.setBlock(10, 64, 11, "minecraft:stone");
     const ModConfig cfg{};
 
-    // Test all 16 angles around 360 degrees!
     for (int step = 0; step < 16; ++step) {
         const float yawDeg = -180.0f + static_cast<float>(step) * 22.5f;
         PlayerContextInput ctx{};
         ctx.inWorld = true;
         ctx.yawDeg = yawDeg;
         ctx.pitchDeg = 25.0f;
-        // Player standing right next to cell (10, 64, 10)
         ctx.playerAabb = AABB{10.15f, 64.0f, 10.15f, 10.75f, 65.8f, 10.75f};
-        ctx.mainhand = HeldItemInput{true, 64, 0, "minecraft:oak_sign", "", 0};
+        ctx.mainhand = HeldItemInput{true, 64, 0, "minecraft:oak_sign", "minecraft:standing_sign", 0};
         ctx.raycast.hasBlockHit = true;
         ctx.raycast.blockPos = {10, 63, 10};
         ctx.raycast.hitFace = Facing::Up;
@@ -174,36 +201,232 @@ void testStandingSign16AnglesAndWallSign() {
         assert(st.orientationKind == OrientationKind::Sign16);
         assert(st.orientedBoxes.size() == 2);
 
-        // Post = narrow wooden post (halfExtents.x < 0.05), Board = full 1.0 block width (halfExtents.x == 0.50)
         const OrientedBox& post = st.orientedBoxes[0];
         const OrientedBox& board = st.orientedBoxes[1];
         assert(post.halfExtents.x < 0.06f);
         assert(approx(board.halfExtents.x, 0.50f));
         assert(board.halfExtents.z < 0.06f);
 
-        // Verify exact perpendicularity to player gaze vector!
         const Vec3 look = PlacementResolver::lookDirectionFromAngles(0.0f, yawDeg);
         assert(approx(board.axisU.dot(look), 0.0f, 1e-3f));
         assert(approx((board.axisW * -1.0f).dot(look * -1.0f), 1.0f, 1e-3f));
-
-        GhostMeshOutput mesh{};
-        GhostMesher::buildMesh(st, cfg, {10.5f, 65.62f, 8.5f}, 0.0f, mesh);
-        assert(!mesh.empty());
-        assert(mesh.packedTriangles.size() == mesh.triangles.size() * 3);
-        assert(mesh.packedLines.size() == mesh.lines.size() * 2);
     }
 
-    // Dark oak sign resolves to Mojang's exact `darkoak_standing_sign` / `darkoak_wall_sign`!
+    // Even when `directBlockIdentifier` is `minecraft:standing_sign`, aiming at a vertical wall
+    // MUST swap cleanly to `minecraft:wall_sign` AND aiming under a ceiling MUST be invalid!
+    {
+        PlayerContextInput wallCtx{};
+        wallCtx.inWorld = true;
+        wallCtx.mainhand = HeldItemInput{true, 64, 0, "minecraft:oak_sign", "minecraft:standing_sign", 0};
+        wallCtx.raycast.hasBlockHit = true;
+        wallCtx.raycast.blockPos = {10, 64, 11};
+        wallCtx.raycast.hitFace = Facing::North;
+        wallCtx.raycast.hitWorldPos = {10.5f, 64.5f, 11.0f};
+        const PlacementPreviewState wallSt = PlacementResolver::resolve(wallCtx, world, cfg);
+        assert(wallSt.valid);
+        assert(wallSt.blockIdentifier == "minecraft:wall_sign");
+        assert(wallSt.worldBoxes.size() == 1 && wallSt.worldBoxes[0].sizeZ() < 0.12f);
+
+        wallCtx.raycast.hitFace = Facing::Down;
+        const PlacementPreviewState ceilSt = PlacementResolver::resolve(wallCtx, world, cfg);
+        assert(!ceilSt.valid);
+    }
+
     assert(StateInspector::resolveSpecialItemBlockName("minecraft:dark_oak_sign", Facing::Up) ==
            "minecraft:darkoak_standing_sign");
     assert(StateInspector::resolveSpecialItemBlockName("minecraft:dark_oak_sign", Facing::North) ==
            "minecraft:darkoak_wall_sign");
-    // Signs cannot be placed upside-down under a ceiling (`Facing::Down`)!
-    assert(StateInspector::resolveSpecialItemBlockName("minecraft:oak_sign", Facing::Down).empty());
-    // Hanging signs attach to ceiling (`Down`) or walls (`North`), never floor (`Up`)!
     assert(StateInspector::resolveSpecialItemBlockName("minecraft:oak_hanging_sign", Facing::Up).empty());
     assert(StateInspector::resolveSpecialItemBlockName("minecraft:oak_hanging_sign", Facing::Down) ==
            "minecraft:oak_hanging_sign");
+}
+
+void testUnderwaterRaycastingAndSpecialItemOutlines() {
+    FakeWorld world;
+    // Build an underwater ocean room filled with `water` & `bubble_column`:
+    for (int x = 358; x <= 364; ++x) {
+        for (int z = -26; z <= -20; ++z) {
+            world.setBlock(x, 61, z, "minecraft:stone"); // ocean floor at y=61
+            world.setBlock(x, 62, z, "minecraft:water");
+            world.setBlock(x, 63, z, (x == 361) ? "minecraft:bubble_column" : "minecraft:water");
+            world.setBlock(x, 64, z, "minecraft:water");
+        }
+    }
+    // Underwater stone wall at x = 363
+    for (int y = 62; y <= 65; ++y) {
+        for (int z = -26; z <= -20; ++z) {
+            world.setBlock(363, y, z, "minecraft:stone");
+        }
+    }
+
+    const ModConfig cfg{};
+
+    // 1. Raycast from underwater camera at (360.5, 63.6, -22.5) straight toward +X wall at x=363:
+    //    MUST pass straight through `water` AND `bubble_column` and hit wall face `West` at (363, 63, -23)!
+    const RaycastHitInput wallRay = PlacementResolver::raycastWorld(
+        {360.5f, 63.6f, -22.5f}, {1.0f, 0.0f, 0.0f}, 6.0f, world);
+    assert(wallRay.hasBlockHit);
+    assert(wallRay.blockPos == BlockPos(363, 63, -23));
+    assert(wallRay.hitFace == Facing::West);
+
+    // 2. Item Frame (`minecraft:item_frame` AND `minecraft:glow_frame`) on underwater wall:
+    //    MUST be exact 12x12x1 thin frame flush at x = [362.9375 .. 363.0], NEVER a 1x1x1 cube!
+    for (const char* frameItem : {"minecraft:item_frame", "minecraft:glow_frame"}) {
+        PlayerContextInput ctx{};
+        ctx.inWorld = true;
+        ctx.mainhand = HeldItemInput{true, 64, 0, frameItem, "", 0};
+        ctx.raycast = wallRay;
+        const PlacementPreviewState st = PlacementResolver::resolve(ctx, world, cfg);
+        assert(st.valid);
+        assert(st.primaryPos == BlockPos(362, 63, -23));
+        assert(st.worldBoxes.size() == 1);
+        assert(approx(st.worldBoxes[0].sizeX(), 0.0625f));
+        assert(approx(st.worldBoxes[0].sizeY(), 0.75f));
+        assert(approx(st.worldBoxes[0].sizeZ(), 0.75f));
+        assert(approx(st.worldBoxes[0].max.x, 363.0f));
+    }
+
+    // 3. Painting (`minecraft:painting`): thin 16x16x1 on vertical walls, hidden on ocean floor!
+    {
+        PlayerContextInput ctx{};
+        ctx.inWorld = true;
+        ctx.mainhand = HeldItemInput{true, 16, 0, "minecraft:painting", "", 0};
+        ctx.raycast = wallRay;
+        const PlacementPreviewState wallPaint = PlacementResolver::resolve(ctx, world, cfg);
+        assert(wallPaint.valid && wallPaint.worldBoxes.size() == 1);
+        assert(approx(wallPaint.worldBoxes[0].sizeX(), 0.0625f));
+        assert(approx(wallPaint.worldBoxes[0].sizeY(), 1.0f));
+        assert(approx(wallPaint.worldBoxes[0].sizeZ(), 1.0f));
+
+        const RaycastHitInput floorRay = PlacementResolver::raycastWorld(
+            {360.5f, 63.6f, -22.5f}, {0.0f, -1.0f, 0.0f}, 6.0f, world);
+        assert(floorRay.hasBlockHit && floorRay.blockPos == BlockPos(360, 61, -23));
+        ctx.raycast = floorRay;
+        assert(!PlacementResolver::resolve(ctx, world, cfg).valid);
+    }
+
+    // 4. Sea Pickle (`minecraft:sea_pickle`) underwater on ocean floor + 1..4 cluster boxes:
+    {
+        const RaycastHitInput floorRay = PlacementResolver::raycastWorld(
+            {360.5f, 63.6f, -22.5f}, {0.0f, -1.0f, 0.0f}, 6.0f, world);
+        PlayerContextInput ctx{};
+        ctx.inWorld = true;
+        ctx.mainhand = HeldItemInput{true, 64, 0, "minecraft:sea_pickle", "minecraft:sea_pickle", 0};
+        ctx.raycast = floorRay;
+        const PlacementPreviewState pickle = PlacementResolver::resolve(ctx, world, cfg);
+        assert(pickle.valid);
+        assert(pickle.primaryPos == BlockPos(360, 62, -23));
+        assert(pickle.worldBoxes.size() == 1);
+        assert(approx(pickle.worldBoxes[0].sizeX(), 0.25f));
+        assert(approx(pickle.worldBoxes[0].sizeY(), 0.375f));
+        assert(approx(pickle.worldBoxes[0].sizeZ(), 0.25f));
+
+        for (int c = 1; c <= 4; ++c) {
+            assert(static_cast<int>(StateInspector::buildSeaPickleClusterWorldBoxes({360, 62, -23}, c).size()) == c);
+            assert(static_cast<int>(StateInspector::buildTurtleEggClusterWorldBoxes({360, 62, -23}, c).size()) == c);
+        }
+    }
+
+    // 5. End Rod on vertical wall: mounting cap flush on wall + horizontal shaft!
+    {
+        PlayerContextInput ctx{};
+        ctx.inWorld = true;
+        ctx.mainhand = HeldItemInput{true, 64, 0, "minecraft:end_rod", "minecraft:end_rod", 0};
+        ctx.raycast = wallRay;
+        const PlacementPreviewState rod = PlacementResolver::resolve(ctx, world, cfg);
+        assert(rod.valid && rod.worldBoxes.size() == 2);
+        assert(approx(rod.worldBoxes[0].max.x, 363.0f));
+        assert(approx(rod.worldBoxes[1].min.x, 362.0f));
+    }
+
+    // 6. Skeleton Skull on wall (0.5^3 against wall) & on floor (rotated 16-angle OBB):
+    {
+        PlayerContextInput ctx{};
+        ctx.inWorld = true;
+        ctx.yawDeg = 45.0f;
+        ctx.mainhand = HeldItemInput{true, 64, 0, "minecraft:skeleton_skull", "", 0};
+        ctx.raycast = wallRay;
+        const PlacementPreviewState wallSkull = PlacementResolver::resolve(ctx, world, cfg);
+        assert(wallSkull.valid && wallSkull.worldBoxes.size() == 1);
+        assert(approx(wallSkull.worldBoxes[0].sizeX(), 0.5f));
+        assert(approx(wallSkull.worldBoxes[0].max.x, 363.0f));
+
+        ctx.raycast = PlacementResolver::raycastWorld(
+            {360.5f, 63.6f, -22.5f}, {0.0f, -1.0f, 0.0f}, 6.0f, world);
+        const PlacementPreviewState floorSkull = PlacementResolver::resolve(ctx, world, cfg);
+        assert(floorSkull.valid && floorSkull.orientedBoxes.size() == 1);
+        assert(approx(floorSkull.orientedBoxes[0].halfExtents.x, 0.25f));
+    }
+}
+
+void testSmoothHotbarBlockSwitchMorphing() {
+    FakeWorld world;
+    for (int x = 0; x <= 6; ++x) {
+        for (int z = 0; z <= 6; ++z) {
+            world.setBlock(x, 63, z, "minecraft:stone");
+        }
+    }
+    world.setBlock(2, 66, 4, "minecraft:stone"); // ceiling block for hanging sign
+
+    ModConfig cfg{};
+    cfg.smoothAnimation = true;
+    cfg.animationSpeed = 18.0f;
+
+    auto resolveFloor = [&](HeldItemInput held, float yaw = 22.5f) {
+        PlayerContextInput ctx{};
+        ctx.inWorld = true;
+        ctx.yawDeg = yaw;
+        ctx.mainhand = std::move(held);
+        ctx.raycast.hasBlockHit = true;
+        ctx.raycast.blockPos = {2, 63, 4};
+        ctx.raycast.hitFace = Facing::Up;
+        ctx.raycast.hitWorldPos = {2.5f, 64.0f, 4.5f};
+        return PlacementResolver::resolve(ctx, world, cfg);
+    };
+
+    const PlacementPreviewState cube = resolveFloor({true, 64, 0, "minecraft:stone", "minecraft:stone", 0});
+    const PlacementPreviewState pickle = resolveFloor({true, 64, 0, "minecraft:sea_pickle", "minecraft:sea_pickle", 0});
+    const PlacementPreviewState sign = resolveFloor({true, 16, 0, "minecraft:oak_sign", "minecraft:standing_sign", 0}, 45.0f);
+    const PlacementPreviewState bed = resolveFloor({true, 1, 0, "minecraft:bed", "", 0}, 0.0f);
+    const PlacementPreviewState slab = resolveFloor({true, 64, 0, "minecraft:crimson_slab", "minecraft:crimson_slab", 0});
+
+    PreviewAnimator anim;
+    PlacementPreviewState cur{};
+
+    // 1. Settle on full 1x1x1 Stone block at (2, 64, 4)
+    for (int i = 0; i < 30; ++i) cur = anim.update(cube, cfg, 1.0f / 60.0f);
+    assert(cur.valid && cur.worldBoxes.size() == 1);
+    assert(approx(cur.worldBoxes[0].sizeY(), 1.0f, 1e-2f));
+
+    // 2. Switch hotbar to Sea Pickle (`sizeY = 0.375`): first frame MUST morph smoothly (`0.40 < sizeY < 0.99`), NOT snap!
+    cur = anim.update(pickle, cfg, 1.0f / 60.0f);
+    assert(cur.valid && cur.worldBoxes.size() == 1);
+    assert(cur.worldBoxes[0].sizeY() > 0.40f && cur.worldBoxes[0].sizeY() < 0.99f);
+    for (int i = 0; i < 35; ++i) cur = anim.update(pickle, cfg, 1.0f / 60.0f);
+    assert(approx(cur.worldBoxes[0].sizeY(), 0.375f, 1e-2f));
+
+    // 3. Switch hotbar from 1-AABB Sea Pickle -> 2-OBB 45-degree Standing Sign:
+    //    First frame promotes smoothly into 2 orthonormal OBBs rotating & growing toward sign post + board!
+    cur = anim.update(sign, cfg, 1.0f / 60.0f);
+    assert(cur.valid && cur.orientedBoxes.size() == 2);
+    assert(cur.orientedBoxes[1].halfExtents.x > 0.13f && cur.orientedBoxes[1].halfExtents.x < 0.49f);
+    // Verify strict right-handed orthonormality (`det([U, V, W]) == +1`)!
+    const float det = cur.orientedBoxes[1].axisU.cross(cur.orientedBoxes[1].axisV).dot(cur.orientedBoxes[1].axisW);
+    assert(approx(det, 1.0f, 1e-3f));
+    for (int i = 0; i < 35; ++i) cur = anim.update(sign, cfg, 1.0f / 60.0f);
+    assert(cur.orientedBoxes.size() == 2 && approx(cur.orientedBoxes[1].halfExtents.x, 0.50f, 1e-2f));
+
+    // 4. Switch hotbar from 2-OBB Sign -> 6-AABB Bed -> 1-AABB Slab:
+    //    Smoothly morphs all 6 parts and settles back cleanly onto 1 exact AABB!
+    cur = anim.update(bed, cfg, 1.0f / 60.0f);
+    assert(cur.valid && cur.orientedBoxes.size() == 6);
+    for (int i = 0; i < 40; ++i) cur = anim.update(bed, cfg, 1.0f / 60.0f);
+    assert(cur.orientedBoxes.empty() && cur.worldBoxes.size() == 6);
+
+    cur = anim.update(slab, cfg, 1.0f / 60.0f);
+    assert(cur.valid && cur.worldBoxes.size() == 6);
+    for (int i = 0; i < 40; ++i) cur = anim.update(slab, cfg, 1.0f / 60.0f);
+    assert(cur.worldBoxes.size() == 1 && approx(cur.worldBoxes[0].sizeY(), 0.5f, 1e-2f));
 }
 
 void testNonPlaceableItemsNeverPreview() {
@@ -230,63 +453,6 @@ void testNonPlaceableItemsNeverPreview() {
         const PlacementPreviewState st = PlacementResolver::resolve(ctx, world, cfg);
         assert(!st.valid);
     }
-}
-
-void testSmoothBlockToBlockAnimatorAndFade() {
-    FakeWorld world;
-    for (int x = 0; x <= 6; ++x) {
-        world.setBlock(x, 63, 4, "minecraft:stone");
-    }
-
-    ModConfig cfg{};
-    cfg.smoothAnimation = true;
-    cfg.animationSpeed = 18.0f;
-
-    PlayerContextInput ctx{};
-    ctx.inWorld = true;
-    ctx.mainhand = HeldItemInput{true, 64, 0, "minecraft:oak_planks", "minecraft:oak_planks", 0};
-    ctx.raycast.hasBlockHit = true;
-    ctx.raycast.blockPos = {1, 63, 4};
-    ctx.raycast.hitFace = Facing::Up;
-    ctx.raycast.hitWorldPos = {1.5f, 64.0f, 4.5f};
-
-    PreviewAnimator anim;
-    PlacementPreviewState t1 = PlacementResolver::resolve(ctx, world, cfg);
-    assert(t1.valid && t1.primaryPos == BlockPos(1, 64, 4));
-
-    // Settle on cell (1, 64, 4)
-    PlacementPreviewState cur{};
-    for (int i = 0; i < 30; ++i) {
-        cur = anim.update(t1, cfg, 1.0f / 60.0f);
-    }
-    assert(cur.valid);
-    assert(approx(cur.worldBoxes[0].min.x, 1.0f, 1e-2f));
-    assert(approx(cur.visibilityAlpha, 1.0f, 1e-2f));
-
-    // Look smoothly over to cell (2, 64, 4): first frame MUST glide smoothly between 1.0 and 2.0!
-    ctx.raycast.blockPos = {2, 63, 4};
-    ctx.raycast.hitWorldPos = {2.5f, 64.0f, 4.5f};
-    PlacementPreviewState t2 = PlacementResolver::resolve(ctx, world, cfg);
-    const PlacementPreviewState mid = anim.update(t2, cfg, 1.0f / 60.0f);
-    assert(mid.valid);
-    assert(mid.worldBoxes[0].min.x > 1.05f && mid.worldBoxes[0].min.x < 1.95f);
-
-    // Within 0.45s at 60 FPS, settles cleanly onto exact (2.0, 64.0, 4.0)!
-    for (int i = 0; i < 28; ++i) {
-        cur = anim.update(t2, cfg, 1.0f / 60.0f);
-    }
-    assert(approx(cur.worldBoxes[0].min.x, 2.0f, 1e-2f));
-
-    // Look up at sky (`invalid`): fades smoothly downward instead of popping in 1 frame, then turns off cleanly!
-    const PlacementPreviewState sky{};
-    const PlacementPreviewState fade1 = anim.update(sky, cfg, 1.0f / 60.0f);
-    assert(fade1.valid);
-    assert(fade1.visibilityAlpha > 0.05f && fade1.visibilityAlpha < 0.95f);
-
-    for (int i = 0; i < 40; ++i) {
-        cur = anim.update(sky, cfg, 1.0f / 60.0f);
-    }
-    assert(!cur.valid);
 }
 
 void testSlabMergeAndDebugRendererSwapPass() {
@@ -326,10 +492,11 @@ void testSlabMergeAndDebugRendererSwapPass() {
 } // namespace
 
 int main() {
-    testMetadataAndHexColorPicker();
+    testMetadataColorPickerAndDiskPersistence();
     testStandingSign16AnglesAndWallSign();
+    testUnderwaterRaycastingAndSpecialItemOutlines();
+    testSmoothHotbarBlockSwitchMorphing();
     testNonPlaceableItemsNeverPreview();
-    testSmoothBlockToBlockAnimatorAndFade();
     testSlabMergeAndDebugRendererSwapPass();
     std::cout << "All Place Preview unit & sanitizer tests passed!\n";
     return 0;

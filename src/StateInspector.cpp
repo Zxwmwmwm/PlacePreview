@@ -68,6 +68,56 @@ Facing facingFromWeirdoDirection(int val) noexcept {
     return Facing::North;
 }
 
+bool isFlowerOrSmallPlantName(const std::string& n) noexcept {
+    return endsWith(n, "_sapling") ||
+           endsWith(n, "_flower") ||
+           endsWith(n, "_tulip") ||
+           endsWith(n, "_mushroom") ||
+           endsWith(n, "_fungus") ||
+           endsWith(n, "_roots") ||
+           endsWith(n, "_sprouts") ||
+           n == "dandelion" ||
+           n == "poppy" ||
+           n == "blue_orchid" ||
+           n == "allium" ||
+           n == "azure_bluet" ||
+           n == "oxeye_daisy" ||
+           n == "cornflower" ||
+           n == "lily_of_the_valley" ||
+           n == "wither_rose" ||
+           n == "torchflower" ||
+           n == "open_eyeblossom" ||
+           n == "closed_eyeblossom" ||
+           n == "eyeblossom" ||
+           n == "golden_dandelion" ||
+           n == "cactus_flower" ||
+           n == "firefly_bush" ||
+           n == "sweet_berry_bush" ||
+           n == "short_grass" ||
+           n == "tallgrass" ||
+           n == "short_dry_grass" ||
+           n == "tall_dry_grass" ||
+           n == "fern" ||
+           n == "deadbush" ||
+           n == "azalea" ||
+           n == "flowering_azalea" ||
+           n == "reeds" ||
+           n == "bamboo" ||
+           n == "bamboo_sapling" ||
+           n == "kelp" ||
+           n == "seagrass" ||
+           n == "tall_seagrass" ||
+           endsWith(n, "_coral");
+}
+
+bool isCoralFanName(const std::string& n) noexcept {
+    return n == "coral_fan" ||
+           n == "coral_fan_dead" ||
+           startsWith(n, "coral_fan_hang") ||
+           endsWith(n, "_coral_fan") ||
+           endsWith(n, "_coral_wall_fan");
+}
+
 } // namespace
 
 std::string_view StateInspector::stripNamespace(std::string_view id) noexcept {
@@ -143,6 +193,35 @@ bool StateInspector::isCandleBlock(std::string_view id) noexcept {
     return n == "candle" || endsWith(n, "_candle");
 }
 
+bool StateInspector::isSeaPickleBlock(std::string_view id) noexcept {
+    return lowerAscii(stripNamespace(id)) == "sea_pickle";
+}
+
+bool StateInspector::isTurtleEggBlock(std::string_view id) noexcept {
+    return lowerAscii(stripNamespace(id)) == "turtle_egg";
+}
+
+bool StateInspector::isFlowerBedBlock(std::string_view id) noexcept {
+    const std::string n = lowerAscii(stripNamespace(id));
+    return n == "pink_petals" || n == "wildflowers" || n == "leaf_litter";
+}
+
+bool StateInspector::isLiquidOrAirBlock(std::string_view id) noexcept {
+    const std::string n = lowerAscii(stripNamespace(id));
+    return n.empty() ||
+           n == "air" ||
+           n == "cave_air" ||
+           n == "void_air" ||
+           n == "water" ||
+           n == "flowing_water" ||
+           n == "lava" ||
+           n == "flowing_lava" ||
+           n == "bubble_column" ||
+           n == "light_block" ||
+           startsWith(n, "light_block_") ||
+           n == "structure_void";
+}
+
 bool StateInspector::isPillarBlock(std::string_view id) noexcept {
     const std::string n = lowerAscii(stripNamespace(id));
     return endsWith(n, "_log") ||
@@ -186,7 +265,12 @@ bool StateInspector::isSixWayBlock(std::string_view id) noexcept {
            n == "soul_torch" ||
            n == "redstone_torch" ||
            n == "unlit_redstone_torch" ||
-           n == "copper_torch";
+           n == "copper_torch" ||
+           n == "underwater_torch" ||
+           n == "vine" ||
+           n == "glow_lichen" ||
+           n == "sculk_vein" ||
+           n == "resin_clump";
 }
 
 bool StateInspector::isHorizontalDirectionalBlock(std::string_view id) noexcept {
@@ -227,6 +311,8 @@ bool StateInspector::isHorizontalDirectionalBlock(std::string_view id) noexcept 
            n == "powered_comparator" ||
            n == "ladder" ||
            n == "tripwire_hook" ||
+           n == "painting" ||
+           isCoralFanName(n) ||
            endsWith(n, "_glazed_terracotta") ||
            isWallSignBlock(n);
 }
@@ -241,21 +327,35 @@ bool StateInspector::hasNonCollidingPlacement(std::string_view id) noexcept {
     return isWaterSurfaceBlock(n) ||
            isStandingSignBlock(n) ||
            isWallSignBlock(n) ||
+           isHangingSignBlock(n) ||
+           isSkullBlock(n) ||
+           isCandleBlock(n) ||
+           isSeaPickleBlock(n) ||
+           isTurtleEggBlock(n) ||
+           isFlowerBedBlock(n) ||
+           isCoralFanName(n) ||
+           isFlowerOrSmallPlantName(n) ||
            n == "standing_banner" ||
            n == "wall_banner" ||
            n == "torch" || endsWith(n, "_torch") ||
+           n == "lantern" || endsWith(n, "_lantern") ||
+           n == "chain" || endsWith(n, "_chain") ||
+           n == "end_rod" || n == "lightning_rod" || endsWith(n, "_lightning_rod") ||
            n == "lever" || endsWith(n, "_button") ||
-           n == "frame" || n == "glow_frame" ||
+           n == "frame" || n == "glow_frame" || n == "painting" ||
+           n == "flower_pot" ||
+           n == "amethyst_cluster" || endsWith(n, "_amethyst_bud") ||
+           n == "pointed_dripstone" ||
+           n == "spore_blossom" || n == "hanging_roots" || n == "cave_vines" ||
            n == "carpet" || endsWith(n, "_carpet") ||
            endsWith(n, "_pressure_plate") ||
            n == "redstone_wire" || n == "tripwire" || n == "tripwire_hook" ||
            n == "rail" || endsWith(n, "_rail") ||
-           n == "ladder" || n == "vine" || n == "glow_lichen" || n == "sculk_vein" ||
+           n == "ladder" || n == "vine" || n == "glow_lichen" ||
+           n == "sculk_vein" || n == "resin_clump" ||
            n == "wheat" || n == "carrots" || n == "potatoes" || n == "beetroot" ||
-           n == "pumpkin_stem" || n == "melon_stem" || n == "nether_wart" || n == "reeds" ||
-           n == "torchflower_crop" || n == "pitcher_crop" || n == "sweet_berry_bush" ||
-           endsWith(n, "_sapling") || endsWith(n, "_flower") ||
-           n == "dandelion" || n == "poppy" || n == "brown_mushroom" || n == "red_mushroom";
+           n == "pumpkin_stem" || n == "melon_stem" || n == "nether_wart" ||
+           n == "torchflower_crop" || n == "pitcher_crop";
 }
 
 bool StateInspector::isInteractiveBlock(std::string_view id) noexcept {
@@ -306,6 +406,24 @@ std::string StateInspector::resolveSpecialItemBlockName(
     const std::string n = lowerAscii(stripNamespace(itemIdentifier));
     if (n.empty()) return {};
 
+    // Item Frames & Glow Item Frames (`item_frame` / `frame`, `glow_item_frame` / `glow_frame`)
+    if (n == "frame" || n == "item_frame") return "minecraft:frame";
+    if (n == "glow_frame" || n == "glow_item_frame") return "minecraft:glow_frame";
+
+    // Paintings mount strictly on horizontal vertical walls (North/South/West/East), never floors/ceilings
+    if (n == "painting") {
+        if (hitFace == Facing::Up || hitFace == Facing::Down) return {};
+        return "minecraft:painting";
+    }
+
+    // Armor Stand & End Crystal
+    if (n == "armor_stand") return "minecraft:armor_stand";
+    if (n == "end_crystal") return "minecraft:end_crystal";
+
+    // Water surface items
+    if (n == "lily_pad" || n == "waterlily") return "minecraft:waterlily";
+    if (n == "frog_spawn" || n == "frogspawn") return "minecraft:frog_spawn";
+
     if (n == "bed" || endsWith(n, "_bed")) return "minecraft:" + n;
     if (n == "wooden_door") return "minecraft:wooden_door";
     if (isDoorBlock(n)) return "minecraft:" + n;
@@ -314,19 +432,28 @@ std::string StateInspector::resolveSpecialItemBlockName(
     if (n == "cauldron") return "minecraft:cauldron";
     if (n == "brewing_stand") return "minecraft:brewing_stand";
     if (n == "flower_pot") return "minecraft:flower_pot";
-    if (n == "frame") return "minecraft:frame";
-    if (n == "glow_frame") return "minecraft:glow_frame";
+    if (n == "decorated_pot") return "minecraft:decorated_pot";
     if (n == "repeater") return "minecraft:unpowered_repeater";
     if (n == "comparator") return "minecraft:unpowered_comparator";
     if (n == "campfire") return "minecraft:campfire";
     if (n == "soul_campfire") return "minecraft:soul_campfire";
     if (n == "chain" || endsWith(n, "_chain")) return "minecraft:" + n;
+    if (n == "lantern" || n == "soul_lantern" || endsWith(n, "_copper_lantern") || n == "copper_lantern") {
+        return "minecraft:" + n;
+    }
     if (n == "cake") return "minecraft:cake";
     if (n == "redstone") return "minecraft:redstone_wire";
     if (n == "string") return "minecraft:tripwire";
     if (n == "kelp") return "minecraft:kelp";
+    if (n == "seagrass") return "minecraft:seagrass";
     if (n == "sea_pickle") return "minecraft:sea_pickle";
     if (n == "turtle_egg") return "minecraft:turtle_egg";
+    if (n == "sniffer_egg") return "minecraft:sniffer_egg";
+    if (n == "dragon_egg") return "minecraft:dragon_egg";
+    if (n == "conduit") return "minecraft:conduit";
+    if (n == "heavy_core") return "minecraft:heavy_core";
+    if (n == "dried_ghast") return "minecraft:dried_ghast";
+    if (n == "pink_petals" || n == "wildflowers" || n == "leaf_litter") return "minecraft:" + n;
     if (n == "wheat_seeds") return "minecraft:wheat";
     if (n == "beetroot_seeds") return "minecraft:beetroot";
     if (n == "pumpkin_seeds") return "minecraft:pumpkin_stem";
@@ -337,7 +464,16 @@ std::string StateInspector::resolveSpecialItemBlockName(
     if (n == "potato") return "minecraft:potatoes";
     if (n == "nether_wart") return "minecraft:nether_wart";
     if (n == "sweet_berries") return "minecraft:sweet_berry_bush";
+    if (n == "glow_berries") {
+        return (hitFace == Facing::Down) ? "minecraft:cave_vines" : std::string{};
+    }
     if (n == "sugar_cane" || n == "reeds") return "minecraft:reeds";
+
+    // Coral fans: floor or horizontal wall, never under ceilings
+    if (isCoralFanName(n)) {
+        if (hitFace == Facing::Down) return {};
+        return "minecraft:" + n;
+    }
 
     // Hanging signs attach to ceiling (Down) or horizontal walls (N/S/W/E), never floor (Up).
     if (endsWith(n, "_hanging_sign")) {
@@ -345,25 +481,33 @@ std::string StateInspector::resolveSpecialItemBlockName(
         return "minecraft:" + n;
     }
 
-    // Standard signs (verified against 1.26.52.03 libminecraftpe.so string table):
-    //   - "oak_sign" / "sign" -> "minecraft:standing_sign" / "minecraft:wall_sign"
-    //   - "dark_oak_sign" / "darkoak_sign" -> "minecraft:darkoak_standing_sign" / "minecraft:darkoak_wall_sign"
-    //   - all other "<wood>_sign" -> "minecraft:<wood>_standing_sign" / "minecraft:<wood>_wall_sign"
-    if (n == "sign" || n == "oak_sign") {
+    // Standard signs (handles item IDs `oak_sign` / `sign` AND direct block IDs `standing_sign` / `*_standing_sign`!):
+    if (n == "sign" || n == "oak_sign" || n == "standing_sign" || n == "wall_sign" ||
+        n == "oak_standing_sign" || n == "oak_wall_sign") {
         if (hitFace == Facing::Down) return {};
         return (hitFace == Facing::Up) ? "minecraft:standing_sign" : "minecraft:wall_sign";
     }
-    if (endsWith(n, "_sign")) {
+    if (endsWith(n, "_standing_sign") || endsWith(n, "_wall_sign") || endsWith(n, "_sign")) {
         if (hitFace == Facing::Down) return {};
-        std::string prefix = n.substr(0, n.size() - 5);
+        std::string prefix = n;
+        if (endsWith(prefix, "_standing_sign")) {
+            prefix.resize(prefix.size() - 14);
+        } else if (endsWith(prefix, "_wall_sign")) {
+            prefix.resize(prefix.size() - 10);
+        } else {
+            prefix.resize(prefix.size() - 5);
+        }
         if (prefix == "dark_oak") {
             prefix = "darkoak";
+        }
+        if (prefix.empty() || prefix == "oak") {
+            return (hitFace == Facing::Up) ? "minecraft:standing_sign" : "minecraft:wall_sign";
         }
         return "minecraft:" + prefix + ((hitFace == Facing::Up) ? "_standing_sign" : "_wall_sign");
     }
 
     // Banners: standing_banner on floor, wall_banner on walls, invalid under ceiling.
-    if (n == "banner" || endsWith(n, "_banner")) {
+    if (n == "banner" || n == "standing_banner" || n == "wall_banner" || endsWith(n, "_banner")) {
         if (hitFace == Facing::Down) return {};
         return (hitFace == Facing::Up) ? "minecraft:standing_banner" : "minecraft:wall_banner";
     }
@@ -389,8 +533,8 @@ OrientationSummary StateInspector::decodeOrientation(
     OrientationSummary out{};
     const std::string n = lowerAscii(stripNamespace(blockIdentifier));
 
-    // 1. 16-Angle Standing Signs & Standing Banners (exact SignItem::_useOn ground_sign_direction)
-    if (isStandingSignBlock(n) || n == "standing_banner") {
+    // 1. 16-Angle Standing Signs, Standing Banners, & Armor Stands
+    if (isStandingSignBlock(n) || n == "standing_banner" || n == "armor_stand") {
         out.kind = OrientationKind::Sign16;
         int dir16 = -1;
         if (findProp(props, "ground_sign_direction", dir16)) {
@@ -475,7 +619,7 @@ OrientationSummary StateInspector::decodeOrientation(
         return out;
     }
 
-    // 5. Pillar / Log axial orientation
+    // 5. Pillar / Log / Chain axial orientation
     int axisVal = -1;
     if (findProp(props, "pillar_axis", axisVal) || isPillarBlock(n)) {
         out.kind = OrientationKind::PillarAxis;
@@ -552,7 +696,7 @@ OrientationSummary StateInspector::decodeOrientation(
         return out;
     }
 
-    // 10. Six-way blocks
+    // 10. Six-way surface-attached & directional blocks
     int sixVal = -1;
     if (findProp(props, "minecraft:facing_direction", sixVal) ||
         findProp(props, "facing_direction", sixVal) ||
@@ -569,11 +713,13 @@ OrientationSummary StateInspector::decodeOrientation(
         } else if (n == "end_rod" || n == "lightning_rod" || endsWith(n, "_lightning_rod") ||
                    n == "amethyst_cluster" || endsWith(n, "_amethyst_bud") ||
                    endsWith(n, "_button") || n == "lever" || n == "frame" || n == "glow_frame" ||
-                   endsWith(n, "torch")) {
+                   endsWith(n, "torch") || n == "vine" || n == "glow_lichen" ||
+                   n == "sculk_vein" || n == "resin_clump") {
             out.facing = hitFace;
         } else {
             out.facing = oppositeFacing(pitchYawToSixWayLook(playerPitchDeg, playerYawDeg));
         }
+        out.pillarAxis = facingToPillarAxis(out.facing);
         return out;
     }
 
@@ -583,12 +729,11 @@ OrientationSummary StateInspector::decodeOrientation(
         findProp(props, "direction", cardVal) ||
         isHorizontalDirectionalBlock(n)) {
         out.kind = OrientationKind::Horizontal;
-        if (cardVal >= 0) {
+        if (cardVal >= 0 && n != "painting" && !isCoralFanName(n)) {
             out.facing = facingFromCardinalEnum(cardVal);
-        } else if (n == "ladder" || isWallSignBlock(n) || n == "wall_banner" || n == "tripwire_hook") {
-            out.facing = (hitFace == Facing::Up || hitFace == Facing::Down)
-                             ? oppositeFacing(yawToPlayerLookHorizontal(playerYawDeg))
-                             : hitFace;
+        } else if (n == "ladder" || isWallSignBlock(n) || n == "wall_banner" ||
+                   n == "tripwire_hook" || n == "painting" || isCoralFanName(n)) {
+            out.facing = hitFace;
         } else {
             out.facing = oppositeFacing(yawToPlayerLookHorizontal(playerYawDeg));
         }
@@ -835,6 +980,66 @@ std::vector<AABB> StateInspector::buildCandleClusterWorldBoxes(
     };
 }
 
+std::vector<AABB> StateInspector::buildSeaPickleClusterWorldBoxes(
+    const BlockPos& pos,
+    int pickleCount) {
+
+    const Vec3 o = pos.originVec();
+    const int c = std::clamp(pickleCount, 1, 4);
+    if (c == 1) {
+        return {AABB{o.x + 0.375f, o.y, o.z + 0.375f, o.x + 0.625f, o.y + 0.375f, o.z + 0.625f}};
+    }
+    if (c == 2) {
+        return {
+            AABB{o.x + 0.25f,  o.y, o.z + 0.375f, o.x + 0.50f,  o.y + 0.375f,  o.z + 0.625f},
+            AABB{o.x + 0.50f,  o.y, o.z + 0.25f,  o.x + 0.75f,  o.y + 0.4375f, o.z + 0.50f}
+        };
+    }
+    if (c == 3) {
+        return {
+            AABB{o.x + 0.1875f, o.y, o.z + 0.25f,   o.x + 0.4375f, o.y + 0.375f,  o.z + 0.50f},
+            AABB{o.x + 0.5625f, o.y, o.z + 0.25f,   o.x + 0.8125f, o.y + 0.4375f, o.z + 0.50f},
+            AABB{o.x + 0.375f,  o.y, o.z + 0.5625f, o.x + 0.625f,  o.y + 0.375f,  o.z + 0.8125f}
+        };
+    }
+    return {
+        AABB{o.x + 0.1875f, o.y, o.z + 0.1875f, o.x + 0.4375f, o.y + 0.375f,  o.z + 0.4375f},
+        AABB{o.x + 0.5625f, o.y, o.z + 0.1875f, o.x + 0.8125f, o.y + 0.4375f, o.z + 0.4375f},
+        AABB{o.x + 0.1875f, o.y, o.z + 0.5625f, o.x + 0.4375f, o.y + 0.4375f, o.z + 0.8125f},
+        AABB{o.x + 0.5625f, o.y, o.z + 0.5625f, o.x + 0.8125f, o.y + 0.375f,  o.z + 0.8125f}
+    };
+}
+
+std::vector<AABB> StateInspector::buildTurtleEggClusterWorldBoxes(
+    const BlockPos& pos,
+    int eggCount) {
+
+    const Vec3 o = pos.originVec();
+    const int c = std::clamp(eggCount, 1, 4);
+    if (c == 1) {
+        return {AABB{o.x + 0.3125f, o.y, o.z + 0.3125f, o.x + 0.6875f, o.y + 0.4375f, o.z + 0.6875f}};
+    }
+    if (c == 2) {
+        return {
+            AABB{o.x + 0.1875f, o.y, o.z + 0.25f,   o.x + 0.50f,   o.y + 0.4375f, o.z + 0.5625f},
+            AABB{o.x + 0.5625f, o.y, o.z + 0.4375f, o.x + 0.8125f, o.y + 0.375f,  o.z + 0.6875f}
+        };
+    }
+    if (c == 3) {
+        return {
+            AABB{o.x + 0.1875f, o.y, o.z + 0.1875f, o.x + 0.50f,   o.y + 0.4375f, o.z + 0.50f},
+            AABB{o.x + 0.5625f, o.y, o.z + 0.25f,   o.x + 0.8125f, o.y + 0.375f,  o.z + 0.50f},
+            AABB{o.x + 0.375f,  o.y, o.z + 0.5625f, o.x + 0.6875f, o.y + 0.4375f, o.z + 0.875f}
+        };
+    }
+    return {
+        AABB{o.x + 0.1875f, o.y, o.z + 0.1875f, o.x + 0.50f,   o.y + 0.4375f, o.z + 0.50f},
+        AABB{o.x + 0.5625f, o.y, o.z + 0.1875f, o.x + 0.8125f, o.y + 0.375f,  o.z + 0.4375f},
+        AABB{o.x + 0.1875f, o.y, o.z + 0.5625f, o.x + 0.4375f, o.y + 0.375f,  o.z + 0.8125f},
+        AABB{o.x + 0.50f,   o.y, o.z + 0.50f,   o.x + 0.8125f, o.y + 0.4375f, o.z + 0.8125f}
+    };
+}
+
 std::vector<OrientedBox> StateInspector::buildSpecialOrientedBoxes(
     const BlockPos& pos,
     std::string_view blockIdentifier,
@@ -855,12 +1060,11 @@ std::vector<OrientedBox> StateInspector::buildSpecialOrientedBoxes(
     if (isHangingSignBlock(n)) {
         if (orient.topHalf) {
             return {
-                OrientedBox::fromCellYaw(o, { 0.0f,   0.3125f, 0.0f}, {0.4375f, 0.3125f, 0.0625f}, orient.yawRadians),
-                OrientedBox::fromCellYaw(o, {-0.25f,  0.8125f, 0.0f}, {0.045f,  0.1875f, 0.045f},  orient.yawRadians),
-                OrientedBox::fromCellYaw(o, { 0.25f,  0.8125f, 0.0f}, {0.045f,  0.1875f, 0.045f},  orient.yawRadians)
+                OrientedBox::fromCellYaw(o, { 0.0f,  0.3125f, 0.0f}, {0.4375f, 0.3125f, 0.0625f}, orient.yawRadians),
+                OrientedBox::fromCellYaw(o, {-0.25f, 0.8125f, 0.0f}, {0.045f,  0.1875f, 0.045f},  orient.yawRadians),
+                OrientedBox::fromCellYaw(o, { 0.25f, 0.8125f, 0.0f}, {0.045f,  0.1875f, 0.045f},  orient.yawRadians)
             };
         }
-        // Horizontal wall bracket: top wooden cross-bar runs perpendicular to wall face along board width!
         const float wallBoardYaw = cardinalFacingToYawRad(orient.facing) + kPi * 0.5f;
         return {
             OrientedBox::fromCellYaw(o, { 0.0f,  0.9375f, 0.0f}, {0.50f,   0.0625f, 0.125f}, wallBoardYaw),
@@ -873,29 +1077,39 @@ std::vector<OrientedBox> StateInspector::buildSpecialOrientedBoxes(
     // 3. Standing Banner: 16-angle pole + crossbar + hanging cloth drape
     if (n == "standing_banner") {
         return {
-            OrientedBox::fromCellYaw(o, {0.0f, 0.875f,  0.0f},    {0.045f,  0.875f,  0.045f},  orient.yawRadians),
-            OrientedBox::fromCellYaw(o, {0.0f, 1.75f,   0.0f},    {0.4375f, 0.055f,  0.055f},  orient.yawRadians),
-            OrientedBox::fromCellYaw(o, {0.0f, 0.90625f, -0.09f}, {0.4375f, 0.78125f, 0.035f}, orient.yawRadians)
+            OrientedBox::fromCellYaw(o, {0.0f, 0.875f,   0.0f},  {0.045f,  0.875f,   0.045f}, orient.yawRadians),
+            OrientedBox::fromCellYaw(o, {0.0f, 1.75f,    0.0f},  {0.4375f, 0.055f,   0.055f}, orient.yawRadians),
+            OrientedBox::fromCellYaw(o, {0.0f, 0.90625f, -0.09f},{0.4375f, 0.78125f, 0.035f}, orient.yawRadians)
         };
     }
 
-    // 4. Floor 16-Angle Skull / Mob Head
+    // 4. Armor Stand: stone baseplate + dual legs/posts + waist + full shoulder crossbeam facing player!
+    if (n == "armor_stand") {
+        return {
+            OrientedBox::fromCellYaw(o, { 0.0f,  0.03125f, 0.0f}, {0.375f,  0.03125f, 0.375f},  orient.yawRadians),
+            OrientedBox::fromCellYaw(o, {-0.14f, 0.6875f,  0.0f}, {0.055f,  0.625f,   0.055f},  orient.yawRadians),
+            OrientedBox::fromCellYaw(o, { 0.14f, 0.6875f,  0.0f}, {0.055f,  0.625f,   0.055f},  orient.yawRadians),
+            OrientedBox::fromCellYaw(o, { 0.0f,  1.375f,   0.0f}, {0.375f,  0.0625f,  0.0625f}, orient.yawRadians),
+            OrientedBox::fromCellYaw(o, { 0.0f,  1.6875f,  0.0f}, {0.0625f, 0.25f,    0.0625f}, orient.yawRadians)
+        };
+    }
+
+    // 5. Floor 16-Angle Skull / Mob Head
     if (isSkullBlock(n) && orient.kind == OrientationKind::Sign16) {
         return {
             OrientedBox::fromCellYaw(o, {0.0f, 0.25f, 0.0f}, {0.25f, 0.25f, 0.25f}, orient.yawRadians)
         };
     }
 
-    // 5. Wall-Mounted Angled Torches: tilted 22.5 deg away from wall face
+    // 6. Wall-Mounted Angled Torches: tilted 22.5 deg away from wall face
     if ((n == "torch" || n == "soul_torch" || n == "redstone_torch" ||
-         n == "unlit_redstone_torch" || n == "copper_torch") &&
+         n == "unlit_redstone_torch" || n == "copper_torch" || n == "underwater_torch") &&
         orient.facing != Facing::Up && orient.facing != Facing::Down) {
 
         constexpr float kTilt = 22.5f * kDegToRad;
         const float c = std::cos(kTilt);
         const float s = std::sin(kTilt);
-        const Vec3 outDir = facingNormal(orient.facing); // away from supporting wall
-        // Vertical axis leans away from the wall as Y increases:
+        const Vec3 outDir = facingNormal(orient.facing);
         const Vec3 axisV = (Vec3{0.0f, c, 0.0f} + outDir * s).normalizedOr({0.0f, 1.0f, 0.0f});
         const Vec3 refSide = (std::fabs(outDir.x) > 0.5f) ? Vec3{0.0f, 0.0f, 1.0f} : Vec3{1.0f, 0.0f, 0.0f};
         const Vec3 axisW = refSide.cross(axisV).normalizedOr({0.0f, 0.0f, 1.0f});
@@ -911,7 +1125,7 @@ std::vector<OrientedBox> StateInspector::buildSpecialOrientedBoxes(
         return {torchBox};
     }
 
-    // 6. Lectern: base + pedestal + slanted 22.5 deg reading top facing player
+    // 7. Lectern: base + pedestal + slanted 22.5 deg reading top facing player
     if (n == "lectern") {
         const float yaw = cardinalFacingToYawRad(orient.facing);
         constexpr float kSlope = 22.5f * kDegToRad;
@@ -920,7 +1134,7 @@ std::vector<OrientedBox> StateInspector::buildSpecialOrientedBoxes(
         const float cs = std::cos(kSlope);
         const float ss = std::sin(kSlope);
         const Vec3 u{cy, 0.0f, sy};
-        const Vec3 front{sy, 0.0f, -cy}; // toward player
+        const Vec3 front{sy, 0.0f, -cy};
         const Vec3 v = (Vec3{0.0f, cs, 0.0f} + front * ss).normalizedOr({0.0f, 1.0f, 0.0f});
         const Vec3 w = u.cross(v).normalizedOr({-sy, 0.0f, cy});
 
@@ -945,20 +1159,22 @@ std::vector<OrientedBox> StateInspector::buildSpecialOrientedBoxes(
 
 bool StateInspector::isNonSolidSupportBlock(std::string_view id) noexcept {
     const std::string n = lowerAscii(stripNamespace(id));
-    if (n.empty() || n == "air" || n == "cave_air" || n == "void_air" ||
-        n == "water" || n == "flowing_water" || n == "lava" || n == "flowing_lava" ||
-        n == "fire" || n == "soul_fire" || n == "structure_void" || n == "light_block") {
+    if (isLiquidOrAirBlock(n) || n == "fire" || n == "soul_fire") {
         return true;
     }
-    return n == "short_grass" || n == "tallgrass" || n == "fern" || n == "large_fern" ||
-           n == "deadbush" || n == "vine" || n == "glow_lichen" || n == "sculk_vein" ||
+    return isFlowerOrSmallPlantName(n) ||
+           isCoralFanName(n) ||
+           isSeaPickleBlock(n) ||
+           isTurtleEggBlock(n) ||
+           isFlowerBedBlock(n) ||
+           n == "large_fern" || n == "vine" || n == "glow_lichen" ||
+           n == "sculk_vein" || n == "resin_clump" ||
            n == "snow_layer" || n == "carpet" || endsWith(n, "_carpet") ||
            n == "torch" || endsWith(n, "_torch") || n == "ladder" ||
            endsWith(n, "_button") || n == "lever" || n == "redstone_wire" ||
-           n == "tripwire" || endsWith(n, "_sapling") || endsWith(n, "_flower") ||
-           n == "dandelion" || n == "poppy" || n == "wheat" || n == "carrots" ||
-           n == "potatoes" || n == "beetroot" || n == "nether_wart" || n == "reeds" ||
-           n == "seagrass" || n == "tall_seagrass" || n == "kelp" ||
+           n == "tripwire" || n == "wheat" || n == "carrots" ||
+           n == "potatoes" || n == "beetroot" || n == "nether_wart" ||
+           n == "frame" || n == "glow_frame" || n == "painting" ||
            isWaterSurfaceBlock(n) || isStandingSignBlock(n) || isWallSignBlock(n) ||
            isHangingSignBlock(n) || isBannerBlock(n) || isCandleBlock(n);
 }
@@ -980,8 +1196,25 @@ bool StateInspector::validateBlockSupport(
     const bool aboveSolid = !isNonSolidSupportBlock(above);
     const bool behindSolid = !isNonSolidSupportBlock(behind);
 
+    if (n == "painting") {
+        if (hitFace == Facing::Up || hitFace == Facing::Down) return false;
+        return behindSolid;
+    }
+
+    if (n == "frame" || n == "glow_frame") {
+        return behindSolid || isFenceOrWallOrPane(behind);
+    }
+
+    if (n == "end_crystal") {
+        return below == "obsidian" || below == "bedrock";
+    }
+
+    if (n == "armor_stand") {
+        return belowSolid || isSlabBlock(below);
+    }
+
     if (n == "torch" || n == "soul_torch" || n == "redstone_torch" ||
-        n == "unlit_redstone_torch" || n == "copper_torch") {
+        n == "unlit_redstone_torch" || n == "copper_torch" || n == "underwater_torch") {
         if (hitFace == Facing::Down) return false;
         if (hitFace == Facing::Up) return belowSolid || isFenceOrWallOrPane(below);
         return behindSolid;
@@ -1007,9 +1240,20 @@ bool StateInspector::validateBlockSupport(
         return behindSolid;
     }
 
-    if (endsWith(n, "_button") || n == "lever") {
+    if (isCoralFanName(n)) {
+        if (hitFace == Facing::Down) return false;
+        return (hitFace == Facing::Up) ? belowSolid : behindSolid;
+    }
+
+    if (endsWith(n, "_button") || n == "lever" ||
+        n == "vine" || n == "glow_lichen" || n == "sculk_vein" || n == "resin_clump") {
         return behindSolid;
     }
+
+    if (n == "spore_blossom" || n == "hanging_roots" || n == "cave_vines") {
+        return aboveSolid;
+    }
+
     if (n == "tripwire_hook" || isWallSignBlock(n) || n == "wall_banner") {
         if (hitFace == Facing::Up || hitFace == Facing::Down) return false;
         return behindSolid;
@@ -1021,8 +1265,16 @@ bool StateInspector::validateBlockSupport(
         n == "repeater" || n == "unpowered_repeater" || n == "powered_repeater" ||
         n == "comparator" || n == "unpowered_comparator" || n == "powered_comparator" ||
         isStandingSignBlock(n) || n == "standing_banner" || isCandleBlock(n) ||
+        isSeaPickleBlock(n) || isTurtleEggBlock(n) || isFlowerBedBlock(n) ||
         n == "flower_pot" || n == "cake" || n == "redstone_wire" || n == "snow_layer") {
         return belowSolid || (isCandleBlock(n) && isFenceOrWallOrPane(below));
+    }
+
+    if (n == "kelp") {
+        return belowSolid || below == "kelp";
+    }
+    if (n == "seagrass" || endsWith(n, "_coral")) {
+        return belowSolid;
     }
 
     if (n == "wheat" || n == "carrots" || n == "potatoes" || n == "beetroot" ||
@@ -1101,6 +1353,61 @@ std::vector<AABB> StateInspector::buildFallbackBlockBoxes(
 
     if (isCandleBlock(n)) {
         return buildCandleClusterWorldBoxes(pos, 1);
+    }
+
+    if (isSeaPickleBlock(n)) {
+        return buildSeaPickleClusterWorldBoxes(pos, 1);
+    }
+
+    if (isTurtleEggBlock(n)) {
+        return buildTurtleEggClusterWorldBoxes(pos, 1);
+    }
+
+    if (isFlowerBedBlock(n)) {
+        return {AABB{o.x, o.y, o.z, o.x + 1.0f, o.y + 0.1875f, o.z + 1.0f}};
+    }
+
+    if (n == "conduit") {
+        return {AABB{o.x + 0.3125f, o.y + 0.3125f, o.z + 0.3125f, o.x + 0.6875f, o.y + 0.6875f, o.z + 0.6875f}};
+    }
+
+    if (n == "heavy_core") {
+        return {AABB{o.x + 0.25f, o.y, o.z + 0.25f, o.x + 0.75f, o.y + 0.5f, o.z + 0.75f}};
+    }
+
+    if (n == "dried_ghast") {
+        return {AABB{o.x + 0.1875f, o.y, o.z + 0.1875f, o.x + 0.8125f, o.y + 0.625f, o.z + 0.8125f}};
+    }
+
+    if (n == "sniffer_egg") {
+        return {AABB{o.x + 0.0625f, o.y, o.z + 0.125f, o.x + 0.9375f, o.y + 1.0f, o.z + 0.875f}};
+    }
+
+    if (n == "dragon_egg") {
+        return {
+            AABB{o.x + 0.1875f, o.y,          o.z + 0.1875f, o.x + 0.8125f, o.y + 0.1875f, o.z + 0.8125f},
+            AABB{o.x + 0.0625f, o.y + 0.1875f, o.z + 0.0625f, o.x + 0.9375f, o.y + 0.6875f, o.z + 0.9375f},
+            AABB{o.x + 0.1875f, o.y + 0.6875f, o.z + 0.1875f, o.x + 0.8125f, o.y + 0.9375f, o.z + 0.8125f},
+            AABB{o.x + 0.3125f, o.y + 0.9375f, o.z + 0.3125f, o.x + 0.6875f, o.y + 1.0f,    o.z + 0.6875f}
+        };
+    }
+
+    if (n == "end_crystal") {
+        return {
+            AABB{o.x + 0.0625f, o.y,          o.z + 0.0625f, o.x + 0.9375f, o.y + 0.1875f, o.z + 0.9375f},
+            AABB{o.x + 0.1875f, o.y + 0.3125f, o.z + 0.1875f, o.x + 0.8125f, o.y + 0.9375f, o.z + 0.8125f}
+        };
+    }
+
+    if (n == "armor_stand") {
+        return {
+            AABB{o.x + 0.125f, o.y,          o.z + 0.125f, o.x + 0.875f, o.y + 0.0625f, o.z + 0.875f},
+            AABB{o.x + 0.25f,  o.y + 0.0625f, o.z + 0.25f, o.x + 0.75f,  o.y + 1.9375f, o.z + 0.75f}
+        };
+    }
+
+    if (n == "sculk_sensor" || n == "calibrated_sculk_sensor" || n == "sculk_shrieker") {
+        return {AABB{o.x, o.y, o.z, o.x + 1.0f, o.y + 0.5f, o.z + 1.0f}};
     }
 
     if (endsWith(n, "_carpet") || n == "carpet" || n == "moss_carpet" || endsWith(n, "_pressure_plate")) {
@@ -1190,8 +1497,12 @@ std::vector<AABB> StateInspector::buildFallbackBlockBoxes(
         return {AABB{o.x + 0.25f, o.y + 0.1875f, o.z + 0.25f, o.x + 0.75f, o.y + 0.875f, o.z + 0.75f}};
     }
 
-    if (n == "pointed_dripstone") {
-        return {AABB{o.x + 0.25f, o.y, o.z + 0.25f, o.x + 0.75f, o.y + 1.0f, o.z + 0.75f}};
+    if (n == "pointed_dripstone" || n == "bamboo") {
+        return {AABB{o.x + 0.3125f, o.y, o.z + 0.3125f, o.x + 0.6875f, o.y + 1.0f, o.z + 0.6875f}};
+    }
+
+    if (n == "cactus") {
+        return {AABB{o.x + 0.0625f, o.y, o.z + 0.0625f, o.x + 0.9375f, o.y + 1.0f, o.z + 0.9375f}};
     }
 
     if (n == "amethyst_cluster" || endsWith(n, "_amethyst_bud")) {
@@ -1219,6 +1530,26 @@ std::vector<AABB> StateInspector::buildFallbackBlockBoxes(
             case Facing::West:  return {AABB{o.x + 0.9375f, o.y + 0.125f, o.z + 0.125f,  o.x + 1.0f,   o.y + 0.875f, o.z + 0.875f}};
             case Facing::East:
             default:            return {AABB{o.x,           o.y + 0.125f, o.z + 0.125f,  o.x + 0.0625f, o.y + 0.875f, o.z + 0.875f}};
+        }
+    }
+
+    if (n == "painting") {
+        switch (orient.facing) {
+            case Facing::North: return {AABB{o.x, o.y, o.z + 0.9375f, o.x + 1.0f, o.y + 1.0f, o.z + 1.0f}};
+            case Facing::South: return {AABB{o.x, o.y, o.z,           o.x + 1.0f, o.y + 1.0f, o.z + 0.0625f}};
+            case Facing::West:  return {AABB{o.x + 0.9375f, o.y, o.z, o.x + 1.0f, o.y + 1.0f, o.z + 1.0f}};
+            case Facing::East:
+            default:            return {AABB{o.x,           o.y, o.z, o.x + 0.0625f, o.y + 1.0f, o.z + 1.0f}};
+        }
+    }
+
+    if (isCoralFanName(n)) {
+        switch (orient.facing) {
+            case Facing::North: return {AABB{o.x + 0.125f, o.y + 0.25f, o.z + 0.5f, o.x + 0.875f, o.y + 0.75f, o.z + 1.0f}};
+            case Facing::South: return {AABB{o.x + 0.125f, o.y + 0.25f, o.z,        o.x + 0.875f, o.y + 0.75f, o.z + 0.5f}};
+            case Facing::West:  return {AABB{o.x + 0.5f,   o.y + 0.25f, o.z + 0.125f, o.x + 1.0f, o.y + 0.75f, o.z + 0.875f}};
+            case Facing::East:  return {AABB{o.x,          o.y + 0.25f, o.z + 0.125f, o.x + 0.5f, o.y + 0.75f, o.z + 0.875f}};
+            default:            return {AABB{o.x + 0.125f, o.y,         o.z + 0.125f, o.x + 0.875f, o.y + 0.25f, o.z + 0.875f}};
         }
     }
 
@@ -1270,7 +1601,7 @@ std::vector<AABB> StateInspector::buildFallbackBlockBoxes(
     }
 
     if (n == "torch" || n == "soul_torch" || n == "redstone_torch" ||
-        n == "unlit_redstone_torch" || n == "copper_torch") {
+        n == "unlit_redstone_torch" || n == "copper_torch" || n == "underwater_torch") {
         switch (orient.facing) {
             case Facing::North: return {AABB{o.x + 0.375f, o.y + 0.1875f, o.z + 0.6875f, o.x + 0.625f, o.y + 0.8125f, o.z + 1.0f}};
             case Facing::South: return {AABB{o.x + 0.375f, o.y + 0.1875f, o.z, o.x + 0.625f, o.y + 0.8125f, o.z + 0.3125f}};
@@ -1290,7 +1621,23 @@ std::vector<AABB> StateInspector::buildFallbackBlockBoxes(
         }
     }
 
-    if (endsWith(n, "_button") || n == "lever") {
+    if (n == "vine" || n == "glow_lichen" || n == "sculk_vein" || n == "resin_clump") {
+        switch (orient.facing) {
+            case Facing::Down:  return {AABB{o.x, o.y + 0.9375f, o.z, o.x + 1.0f, o.y + 1.0f, o.z + 1.0f}};
+            case Facing::Up:    return {AABB{o.x, o.y,           o.z, o.x + 1.0f, o.y + 0.0625f, o.z + 1.0f}};
+            case Facing::North: return {AABB{o.x, o.y, o.z + 0.9375f, o.x + 1.0f, o.y + 1.0f, o.z + 1.0f}};
+            case Facing::South: return {AABB{o.x, o.y, o.z,           o.x + 1.0f, o.y + 1.0f, o.z + 0.0625f}};
+            case Facing::West:  return {AABB{o.x + 0.9375f, o.y, o.z, o.x + 1.0f, o.y + 1.0f, o.z + 1.0f}};
+            case Facing::East:
+            default:            return {AABB{o.x,           o.y, o.z, o.x + 0.0625f, o.y + 1.0f, o.z + 1.0f}};
+        }
+    }
+
+    if (n == "spore_blossom" || n == "hanging_roots" || n == "cave_vines") {
+        return {AABB{o.x + 0.125f, o.y + 0.75f, o.z + 0.125f, o.x + 0.875f, o.y + 1.0f, o.z + 0.875f}};
+    }
+
+    if (endsWith(n, "_button") || n == "lever" || n == "tripwire_hook") {
         switch (orient.facing) {
             case Facing::Down:  return {AABB{o.x + 0.3125f, o.y + 0.8125f, o.z + 0.375f, o.x + 0.6875f, o.y + 1.0f, o.z + 0.625f}};
             case Facing::Up:    return {AABB{o.x + 0.3125f, o.y, o.z + 0.375f, o.x + 0.6875f, o.y + 0.1875f, o.z + 0.625f}};
@@ -1320,11 +1667,48 @@ std::vector<AABB> StateInspector::buildFallbackBlockBoxes(
         return {AABB{o.x + 0.0625f, o.y, o.z + 0.0625f, o.x + 0.9375f, o.y + 1.0f, o.z + 0.9375f}};
     }
 
-    if (n == "chain" || endsWith(n, "_chain") || n == "end_rod" || n == "lightning_rod" || endsWith(n, "_lightning_rod")) {
+    // End Rod & Lightning Rod: square mounting cap flush against the attached surface + slender shaft!
+    if (n == "end_rod" || n == "lightning_rod" || endsWith(n, "_lightning_rod")) {
+        switch (orient.facing) {
+            case Facing::Down:
+                return {
+                    AABB{o.x + 0.375f,  o.y + 0.75f, o.z + 0.375f,  o.x + 0.625f,  o.y + 1.0f,  o.z + 0.625f},
+                    AABB{o.x + 0.4375f, o.y,         o.z + 0.4375f, o.x + 0.5625f, o.y + 0.75f, o.z + 0.5625f}
+                };
+            case Facing::North:
+                return {
+                    AABB{o.x + 0.375f,  o.y + 0.375f,  o.z + 0.75f, o.x + 0.625f,  o.y + 0.625f,  o.z + 1.0f},
+                    AABB{o.x + 0.4375f, o.y + 0.4375f, o.z,         o.x + 0.5625f, o.y + 0.5625f, o.z + 0.75f}
+                };
+            case Facing::South:
+                return {
+                    AABB{o.x + 0.375f,  o.y + 0.375f,  o.z,         o.x + 0.625f,  o.y + 0.625f,  o.z + 0.25f},
+                    AABB{o.x + 0.4375f, o.y + 0.4375f, o.z + 0.25f, o.x + 0.5625f, o.y + 0.5625f, o.z + 1.0f}
+                };
+            case Facing::West:
+                return {
+                    AABB{o.x + 0.75f, o.y + 0.375f,  o.z + 0.375f,  o.x + 1.0f,  o.y + 0.625f,  o.z + 0.625f},
+                    AABB{o.x,         o.y + 0.4375f, o.z + 0.4375f, o.x + 0.75f, o.y + 0.5625f, o.z + 0.5625f}
+                };
+            case Facing::East:
+                return {
+                    AABB{o.x,         o.y + 0.375f,  o.z + 0.375f,  o.x + 0.25f, o.y + 0.625f,  o.z + 0.625f},
+                    AABB{o.x + 0.25f, o.y + 0.4375f, o.z + 0.4375f, o.x + 1.0f,  o.y + 0.5625f, o.z + 0.5625f}
+                };
+            case Facing::Up:
+            default:
+                return {
+                    AABB{o.x + 0.375f,  o.y,         o.z + 0.375f,  o.x + 0.625f,  o.y + 0.25f, o.z + 0.625f},
+                    AABB{o.x + 0.4375f, o.y + 0.25f, o.z + 0.4375f, o.x + 0.5625f, o.y + 1.0f,  o.z + 0.5625f}
+                };
+        }
+    }
+
+    if (n == "chain" || endsWith(n, "_chain")) {
         switch (orient.pillarAxis) {
-            case 1:  return {AABB{o.x, o.y + 0.375f, o.z + 0.375f, o.x + 1.0f, o.y + 0.625f, o.z + 0.625f}};
-            case 2:  return {AABB{o.x + 0.375f, o.y + 0.375f, o.z, o.x + 0.625f, o.y + 0.625f, o.z + 1.0f}};
-            default: return {AABB{o.x + 0.375f, o.y, o.z + 0.375f, o.x + 0.625f, o.y + 1.0f, o.z + 0.625f}};
+            case 1:  return {AABB{o.x, o.y + 0.40625f, o.z + 0.40625f, o.x + 1.0f, o.y + 0.59375f, o.z + 0.59375f}};
+            case 2:  return {AABB{o.x + 0.40625f, o.y + 0.40625f, o.z, o.x + 0.59375f, o.y + 0.59375f, o.z + 1.0f}};
+            default: return {AABB{o.x + 0.40625f, o.y, o.z + 0.40625f, o.x + 0.59375f, o.y + 1.0f, o.z + 0.59375f}};
         }
     }
 
@@ -1360,9 +1744,7 @@ std::vector<AABB> StateInspector::buildFallbackBlockBoxes(
         return {AABB{o.x + 0.125f, o.y, o.z + 0.125f, o.x + 0.875f, o.y + 0.25f, o.z + 0.875f}};
     }
 
-    if (endsWith(n, "_sapling") || endsWith(n, "_flower") ||
-        n == "dandelion" || n == "poppy" || n == "sweet_berry_bush" || n == "reeds" ||
-        n == "brown_mushroom" || n == "red_mushroom" || n == "crimson_fungus" || n == "warped_fungus") {
+    if (isFlowerOrSmallPlantName(n)) {
         return {AABB{o.x + 0.1875f, o.y, o.z + 0.1875f, o.x + 0.8125f, o.y + 0.75f, o.z + 0.8125f}};
     }
 

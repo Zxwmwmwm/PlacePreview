@@ -2,6 +2,7 @@
 
 #include "placepreview/Types.hpp"
 
+#include <algorithm>
 #include <cstdio>
 #include <filesystem>
 #include <mutex>
@@ -11,40 +12,38 @@
 namespace placepreview {
 
 struct ModConfig {
-    int schemaVersion{3};
+    int schemaVersion{4};
     bool enabled{true};
 
-    // Quick visual presets:
-    //   "Frosted White", "Classic Cyan", "Material Adaptive",
-    //   "Crisp Wireframe", "Subtle Minimal", "High Contrast", "Custom"
+    // Visual preset helper (optional via JSON / API)
     std::string preset{"Frosted White"};
 
-    // "Shaded + Wireframe", "Translucent Fill", "Wireframe Only"
+    // "Shaded + Wireframe", "Wireframe Only", "Translucent Fill"
     std::string renderMode{"Shaded + Wireframe"};
 
-    // "Material Adaptive", "Custom Accent"
-    std::string colorMode{"Custom Accent"};
+    // "Custom Color", "Material Adaptive"
+    std::string colorMode{"Custom Color"};
 
-    // Clean translucent fill & crisp outline alpha [0.05..1.00]
+    // Clean translucent fill & crisp outline alpha [0.00..1.00]
     float fillOpacity{0.34f};
-    float wireframeOpacity{0.68f};
+    float wireframeOpacity{0.72f};
 
-    // Native slider/swatch picker color (#AARRGGBB / RGB + alpha tint multiplier)
+    // Native inline A / R / G / B slider + live preview swatch color (#AARRGGBB)
     int accentRed{255};
     int accentGreen{255};
     int accentBlue{255};
     int accentAlpha{255};
 
-    // Smooth block-to-block glide & fade animation
+    // Smooth block-to-block AND item-switch 3D morph animation
     bool smoothAnimation{true};
     float animationSpeed{18.0f};
 
-    // 3D depth shading & optional schematic orientation guides
+    // 3D depth shading & optional directional cue
     bool directionalShading{true};
     bool showOrientationGuides{false};
     bool subtleBreathingPulse{false};
 
-    // Bedrock-valid gameplay option
+    // Bedrock gameplay option
     bool hideOnInteractiveWithoutSneak{false};
 
     [[nodiscard]] std::string previewColorHex() const {
@@ -58,7 +57,7 @@ struct ModConfig {
     }
 
     [[nodiscard]] float colorAlphaMultiplier() const noexcept {
-        return static_cast<float>(std::clamp(accentAlpha, 25, 255)) / 255.0f;
+        return static_cast<float>(std::clamp(accentAlpha, 0, 255)) / 255.0f;
     }
 
     [[nodiscard]] RgbaColor resolveBaseColor(const RgbaColor& materialTint) const noexcept {
@@ -89,22 +88,22 @@ public:
     [[nodiscard]] bool loadFromFile(const std::filesystem::path& path);
     [[nodiscard]] bool saveToFile(const std::filesystem::path& path) const;
 
+    [[nodiscard]] static std::string serializeJson(const ModConfig& cfg);
+    [[nodiscard]] static ModConfig parseJson(std::string_view jsonText);
     [[nodiscard]] static bool parseHexColor(
-        std::string_view raw,
+        std::string_view hexStr,
         int& outR,
         int& outG,
         int& outB,
         int& outA) noexcept;
-    [[nodiscard]] static std::string serializeJson(const ModConfig& cfg);
-    [[nodiscard]] static ModConfig parseJson(std::string_view jsonText);
 
 private:
     ConfigManager() = default;
-    static void clampConfig(ModConfig& cfg) noexcept;
+    void saveLocked() const;
 
-    mutable std::mutex mutex_;
-    ModConfig config_{};
-    std::filesystem::path configFilePath_{};
+    mutable std::mutex mMutex;
+    ModConfig mConfig{};
+    std::filesystem::path mFilePath{};
 };
 
 } // namespace placepreview

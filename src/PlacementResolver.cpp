@@ -4,6 +4,7 @@
 #include "placepreview/StateInspector.hpp"
 
 #include <algorithm>
+#include <cmath>
 
 namespace placepreview {
 
@@ -13,10 +14,31 @@ std::string resolvePlaceableBlockName(const HeldItemInput& item, Facing hitFace)
     if (!item.valid || item.count <= 0) {
         return {};
     }
+
+    const std::string specialFromItem = StateInspector::resolveSpecialItemBlockName(item.itemIdentifier, hitFace);
+    if (!specialFromItem.empty()) {
+        return specialFromItem;
+    }
+
     if (!item.directBlockIdentifier.empty()) {
+        const std::string specialFromDirect =
+            StateInspector::resolveSpecialItemBlockName(item.directBlockIdentifier, hitFace);
+        if (!specialFromDirect.empty()) {
+            return specialFromDirect;
+        }
+        // Face-restricted items whose `directBlockIdentifier` rejected `hitFace` (e.g., sign under
+        // ceiling, hanging sign on floor, skull under ceiling, coral fan under ceiling):
+        if (StateInspector::isStandingSignBlock(item.directBlockIdentifier) ||
+            StateInspector::isWallSignBlock(item.directBlockIdentifier) ||
+            StateInspector::isHangingSignBlock(item.directBlockIdentifier) ||
+            StateInspector::isBannerBlock(item.directBlockIdentifier) ||
+            StateInspector::isSkullBlock(item.directBlockIdentifier)) {
+            return {};
+        }
         return item.directBlockIdentifier;
     }
-    return StateInspector::resolveSpecialItemBlockName(item.itemIdentifier, hitFace);
+
+    return {};
 }
 
 Vec3 computeSubClickOffset(const BlockPos& referenceCell, const Vec3& hitWorldPos, Facing /*hitFace*/) noexcept {
@@ -87,8 +109,11 @@ bool rayIntersectAabb(
 }
 
 bool isLiquidName(std::string_view stripped) noexcept {
-    return stripped == "water" || stripped == "flowing_water" ||
-           stripped == "lava" || stripped == "flowing_lava";
+    return stripped == "water" ||
+           stripped == "flowing_water" ||
+           stripped == "lava" ||
+           stripped == "flowing_lava" ||
+           stripped == "bubble_column";
 }
 
 } // namespace
@@ -153,67 +178,44 @@ RaycastHitInput PlacementResolver::raycastWorld(
             const std::string blockId = world.getBlockIdentifier(cell);
             const std::string_view stripped = StateInspector::stripNamespace(blockId);
 
-            if (!stripped.empty() &&
-                stripped != "air" &&
-                stripped != "cave_air" &&
-                stripped != "void_air" &&
-                stripped != "light_block" &&
-                stripped != "structure_void") {
+            if (!stripped.empty() && !StateInspector::isLiquidOrAirBlock(stripped)) {
+                std::vector<AABB> boxes = world.getExistingBlockWorldBoxes(cell);
 
-                if (isLiquidName(stripped)) {
-                    if (!result.hasLiquidHit) {
-                        const std::string aboveId = world.getBlockIdentifier(cell.offset(0, 1, 0));
-                        const float topH = isLiquidName(StateInspector::stripNamespace(aboveId)) ? 1.0f : 0.90f;
-                        const AABB liqBox{
-                            {static_cast<float>(vx), static_cast<float>(vy), static_cast<float>(vz)},
-                            {static_cast<float>(vx + 1), static_cast<float>(vy) + topH, static_cast<float>(vz + 1)}
-                        };
-                        float tLiq = 0.0f;
-                        Facing fLiq = Facing::Up;
-                        if (rayIntersectAabb(origin, dir, liqBox, maxReachBlocks, tLiq, fLiq)) {
-                            result.hasLiquidHit = true;
-                            result.liquidFace = fLiq;
-                            result.liquidPos = cell;
-                            result.liquidWorldPos = origin + dir * tLiq;
-                        }
+                float bestT = maxReachBlocks + 1.0f;
+                Facing bestFace = Facing::Up;
+                bool hitAny = false;
+                for (const auto& box : boxes) {
+                    if (box.isDegenerate()) continue;
+                    float tBox = 0.0f;
+                    Facing fBox = Facing::Up;
+                    if (rayIntersectAabb(origin, dir, box, maxReachBlocks, tBox, fBox) && tBox < bestT) {
+                        bestT = tBox;
+                        bestFace = fBox;
+                        hitAny = true;
                     }
-                } else {
-                    std::vector<AABB> boxes = world.getExistingBlockWorldBoxes(cell);
-                    if (boxes.empty()) {
-                        if (stripped == "snow_layer" || stripped == "glow_lichen" || stripped == "sculk_vein") {
-                            boxes.push_back(AABB{
-                                {static_cast<float>(vx), static_cast<float>(vy), static_cast<float>(vz)},
-                                {static_cast<float>(vx + 1), static_cast<float>(vy) + 0.125f, static_cast<float>(vz + 1)}
-                            });
-                        } else {
-                            boxes.push_back(AABB{
-                                {static_cast<float>(vx) + 0.125f, static_cast<float>(vy), static_cast<float>(vz) + 0.125f},
-                                {static_cast<float>(vx) + 0.875f, static_cast<float>(vy) + 0.75f, static_cast<float>(vz) + 0.875f}
-                            });
-                        }
-                    }
+                }
 
-                    float bestT = maxReachBlocks + 1.0f;
-                    Facing bestFace = Facing::Up;
-                    bool hitAny = false;
-                    for (const auto& box : boxes) {
-                        if (box.isDegenerate()) continue;
-                        float tBox = 0.0f;
-                        Facing fBox = Facing::Up;
-                        if (rayIntersectAabb(origin, dir, box, maxReachBlocks, tBox, fBox) && tBox < bestT) {
-                            bestT = tBox;
-                            bestFace = fBox;
-                            hitAny = true;
-                        }
-                    }
-
-                    if (hitAny && bestT <= maxReachBlocks) {
-                        result.hasBlockHit = true;
-                        result.hitFace = bestFace;
-                        result.blockPos = cell;
-                        result.hitWorldPos = origin + dir * bestT;
-                        return result;
-                    }
+                if (hitAny && bestT <= maxReachBlocks) {
+                    result.hasBlockHit = true;
+                    result.hitFace = bestFace;
+                    result.blockPos = cell;
+                    result.hitWorldPos = origin + dir * bestT;
+                    return result;
+                }
+            } else if (isLiquidName(stripped) && !result.hasLiquidHit) {
+                const std::string aboveId = world.getBlockIdentifier(cell.offset(0, 1, 0));
+                const float topH = isLiquidName(StateInspector::stripNamespace(aboveId)) ? 1.0f : 0.90f;
+                const AABB liqBox{
+                    {static_cast<float>(vx), static_cast<float>(vy), static_cast<float>(vz)},
+                    {static_cast<float>(vx + 1), static_cast<float>(vy) + topH, static_cast<float>(vz + 1)}
+                };
+                float tLiq = 0.0f;
+                Facing fLiq = Facing::Up;
+                if (rayIntersectAabb(origin, dir, liqBox, maxReachBlocks, tLiq, fLiq)) {
+                    result.hasLiquidHit = true;
+                    result.liquidFace = fLiq;
+                    result.liquidPos = cell;
+                    result.liquidWorldPos = origin + dir * tLiq;
                 }
             }
         } else if ((vy < minY && stepY < 0) || (vy > maxY && stepY > 0)) {
@@ -285,7 +287,6 @@ PlacementPreviewState PlacementResolver::resolve(
         return invalid;
     }
 
-    // Re-evaluate special item block name using actual hitFace (e.g., sign on bottom face -> invalid).
     const std::string initialBlockId = resolvePlaceableBlockName(item, clickedFace);
     if (initialBlockId.empty()) {
         return invalid;
@@ -424,8 +425,6 @@ PlacementPreviewState PlacementResolver::resolve(
         return invalid;
     }
 
-    // Re-evaluate special item block name if `calculatePlacePos` adjusted `resolvedFace`
-    // (for example, clicking the side of short_grass replaces on the floor at Facing::Up!).
     const std::string placedSpecialId = resolvePlaceableBlockName(item, resolvedFace);
     if (placedSpecialId.empty()) {
         return invalid;
@@ -522,9 +521,6 @@ PlacementPreviewState PlacementResolver::resolve(
         }
     }
 
-    // Player collision guard ONLY for blocks with solid placement collision!
-    // Non-colliding blocks (standing signs, torches, carpets, buttons, pressure plates, lily pads)
-    // can legitimately be placed right next to / intersecting the player's AABB just like vanilla!
     if (ctx.playerAabb.volume() > 0.0f && !StateInspector::hasNonCollidingPlacement(effectiveId)) {
         for (const auto& box : worldBoxes) {
             if (box.volume() > 0.02f && box.intersects(ctx.playerAabb)) {

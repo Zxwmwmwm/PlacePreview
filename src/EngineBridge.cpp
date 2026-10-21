@@ -276,8 +276,12 @@ bool queryLiveBlockWorldOutline(
         return false;
     }
 
-    // Primary path: verified slot 8 `BlockType::getOutline(bt, block, blockSource, &pos, &buf)`
-    // handles both vanilla C++ subclasses AND data-driven custom addon `BlockSelectionBoxComponent`!
+    // Verified slot 8 `BlockType::getOutline(bt, block, blockSource, &pos, &buf)`:
+    //   - Disassembled at 0x1010a188: already delegates internally to slot 10 (`getVisualShape`) + `pos`
+    //     when no `BlockSelectionBoxComponent` exists, AND intentionally returns degenerate [0..0] when
+    //     `BlockSelectionBoxComponent.mEnabled == 0` (water, lava, air, structure_void, light_block).
+    //   - NEVER fall back to slot 10 (`BlockType + 0x188` = [0..1]^3) when slot 8 returns degenerate,
+    //     or underwater fluid blocks would become solid 1x1x1 raycast walls!
     const auto fnGetOutline = readVtableFn<FnBlockTypeGetOutline>(bt, sig::off::BlockType_VtGetOutline);
     if (fnGetOutline) {
         AABB buf{};
@@ -290,21 +294,6 @@ bool queryLiveBlockWorldOutline(
             if (!candidate.isDegenerate() &&
                 candidate.sizeX() <= 3.0f && candidate.sizeY() <= 3.0f && candidate.sizeZ() <= 3.0f) {
                 outWorldBox = candidate;
-                return true;
-            }
-        }
-    }
-
-    // Secondary pure-stateless path: slot 10 `BlockType::getVisualShape(bt, block, &buf)` + world origin!
-    const auto fnVis = readVtableFn<FnBlockTypeGetVisualShape>(bt, sig::off::BlockType_VtGetVisualShape);
-    if (fnVis) {
-        AABB localBuf{};
-        const AABB* ret = fnVis(bt, blockPtr, &localBuf);
-        if (sig::isValidUserAddress(ret, 4)) {
-            AABB local = (*ret).normalized();
-            if (!local.isDegenerate() &&
-                local.sizeX() <= 3.0f && local.sizeY() <= 3.0f && local.sizeZ() <= 3.0f) {
-                outWorldBox = local.translated(pos.originVec());
                 return true;
             }
         }
@@ -521,7 +510,48 @@ public:
         const void* blk = getNativeBlockPtr(pos);
         if (!blk) return {};
         const std::string id = readBlockIdentifierFromBlock(blk);
-        if (id.empty()) return {};
+        if (id.empty() || StateInspector::isLiquidOrAirBlock(id) ||
+            StateInspector::stripNamespace(id) == "barrier") {
+            return {};
+        }
+
+        // Cluster blocks use exact count-aware sub-boxes for crisp raycasts:
+        if (StateInspector::isSeaPickleBlock(id)) {
+            int count = 1;
+            std::vector<BlockStateProperty> props;
+            extractBlockStateProperties(blk, props);
+            for (const auto& p : props) {
+                if (p.name == "cluster_count") {
+                    count = std::clamp(p.value + 1, 1, 4);
+                    break;
+                }
+            }
+            return StateInspector::buildSeaPickleClusterWorldBoxes(pos, count);
+        }
+        if (StateInspector::isTurtleEggBlock(id)) {
+            int count = 1;
+            std::vector<BlockStateProperty> props;
+            extractBlockStateProperties(blk, props);
+            for (const auto& p : props) {
+                if (p.name == "turtle_egg_count") {
+                    count = std::clamp(p.value + 1, 1, 4);
+                    break;
+                }
+            }
+            return StateInspector::buildTurtleEggClusterWorldBoxes(pos, count);
+        }
+        if (StateInspector::isCandleBlock(id)) {
+            int count = 1;
+            std::vector<BlockStateProperty> props;
+            extractBlockStateProperties(blk, props);
+            for (const auto& p : props) {
+                if (p.name == "candles") {
+                    count = std::clamp(p.value + 1, 1, 4);
+                    break;
+                }
+            }
+            return StateInspector::buildCandleClusterWorldBoxes(pos, count);
+        }
 
         // Multi-part blocks use exact multi-sub-box raycast geometry (stairs, fences, walls, hoppers).
         if (StateInspector::isStairBlock(id) ||
@@ -536,18 +566,22 @@ public:
             return StateInspector::buildFallbackBlockBoxes(pos, id, orient);
         }
 
-        // Query live BlockType::getOutline directly on the world block for 100% accuracy across
-        // all vanilla blocks (signs, flowers, pots, candles, skulls, slabs, chests, crops) AND custom addons!
-        AABB liveBox{};
-        if (queryLiveBlockWorldOutline(blk, mBlockSource, pos, liveBox)) {
-            return {liveBox};
-        }
-
+        // Query live BlockType::getOutline directly on the world block.
         std::vector<BlockStateProperty> props;
         extractBlockStateProperties(blk, props);
         const OrientationSummary orient = StateInspector::decodeOrientation(
             id, props, Facing::Up, Vec3{0.5f, 0.5f, 0.5f}, 0.0f, 0.0f, false);
-        return StateInspector::buildFallbackBlockBoxes(pos, id, orient);
+        const auto fallback = StateInspector::buildFallbackBlockBoxes(pos, id, orient);
+
+        AABB liveBox{};
+        if (queryLiveBlockWorldOutline(blk, mBlockSource, pos, liveBox)) {
+            if (liveBox.volume() >= 0.99f && !fallback.empty() && fallback.front().volume() < 0.99f) {
+                return fallback;
+            }
+            return {liveBox};
+        }
+
+        return fallback;
     }
 
     [[nodiscard]] bool checkAdventureCanPlaceOn(
@@ -568,9 +602,12 @@ public:
         const HeldItemInput& item,
         Facing& inOutFace,
         BlockPos& inOutPos) const override {
-        const std::string placeId = !item.directBlockIdentifier.empty()
-                                        ? item.directBlockIdentifier
-                                        : StateInspector::resolveSpecialItemBlockName(item.itemIdentifier, inOutFace);
+        std::string placeId = StateInspector::resolveSpecialItemBlockName(item.itemIdentifier, inOutFace);
+        if (placeId.empty() && !item.directBlockIdentifier.empty()) {
+            const std::string swapped =
+                StateInspector::resolveSpecialItemBlockName(item.directBlockIdentifier, inOutFace);
+            placeId = !swapped.empty() ? swapped : item.directBlockIdentifier;
+        }
 
         // 1. Direct click on inside face of matching half-slab merges in place.
         if (StateInspector::isSlabBlock(placeId)) {
@@ -587,18 +624,36 @@ public:
             }
         }
 
-        // 2. Candle cluster stacking (up to 4 matching candles in the same cell!).
-        if (StateInspector::isCandleBlock(placeId)) {
-            const void* clickedBlk = getNativeBlockPtr(inOutPos);
-            if (clickedBlk && readBlockIdentifierFromBlock(clickedBlk) == placeId) {
-                std::vector<BlockStateProperty> props;
-                extractBlockStateProperties(clickedBlk, props);
+        // 2. Multi-cluster blocks (`candles`, `sea_pickle`, `turtle_egg`: up to 4 per cell!).
+        auto canStackClusterAt = [&](const BlockPos& cell) -> bool {
+            const void* blk = getNativeBlockPtr(cell);
+            if (!blk) return false;
+            const std::string exId = readBlockIdentifierFromBlock(blk);
+            if (exId != placeId) return false;
+            std::vector<BlockStateProperty> props;
+            extractBlockStateProperties(blk, props);
+            if (StateInspector::isCandleBlock(placeId)) {
                 for (const auto& p : props) {
-                    if (p.name == "candles" && p.value < 3) {
-                        return true;
-                    }
+                    if (p.name == "candles") return p.value < 3;
+                }
+            } else if (StateInspector::isSeaPickleBlock(placeId)) {
+                for (const auto& p : props) {
+                    if (p.name == "cluster_count") return p.value < 3;
+                }
+            } else if (StateInspector::isTurtleEggBlock(placeId)) {
+                for (const auto& p : props) {
+                    if (p.name == "turtle_egg_count") return p.value < 3;
                 }
             }
+            return false;
+        };
+
+        if ((StateInspector::isCandleBlock(placeId) ||
+             StateInspector::isSeaPickleBlock(placeId) ||
+             StateInspector::isTurtleEggBlock(placeId)) &&
+            canStackClusterAt(inOutPos)) {
+            inOutFace = Facing::Up;
+            return true;
         }
 
         // 3. Snow layer stacking (< 8 layers).
@@ -617,9 +672,6 @@ public:
         }
 
         // 4. Replaceable world block clicked directly -> replaces in place!
-        //    Note: when clicking a non-solid replaceable block like `short_grass`, if the block
-        //    below is solid and `inOutFace` came from hitting the side of the grass tuft, vanilla
-        //    treats floor-resting items like signs/torches as resting on top of the floor (`Up`).
         if (isReplaceableBlock(inOutPos)) {
             if (inOutFace != Facing::Down &&
                 !StateInspector::isNonSolidSupportBlock(getBlockIdentifier(inOutPos.offset(0, -1, 0)))) {
@@ -647,18 +699,13 @@ public:
             inOutPos = target;
             return true;
         }
-        if (StateInspector::isCandleBlock(placeId) && getBlockIdentifier(target) == placeId) {
-            const void* tBlk = getNativeBlockPtr(target);
-            if (tBlk) {
-                std::vector<BlockStateProperty> props;
-                extractBlockStateProperties(tBlk, props);
-                for (const auto& p : props) {
-                    if (p.name == "candles" && p.value < 3) {
-                        inOutPos = target;
-                        return true;
-                    }
-                }
-            }
+        if ((StateInspector::isCandleBlock(placeId) ||
+             StateInspector::isSeaPickleBlock(placeId) ||
+             StateInspector::isTurtleEggBlock(placeId)) &&
+            canStackClusterAt(target)) {
+            inOutPos = target;
+            inOutFace = Facing::Up;
+            return true;
         }
         return false;
     }
@@ -766,7 +813,7 @@ public:
             }
         }
 
-        // 2. Candle cluster stacking preview (1..4 candles!)
+        // 2. Multi-cluster stacking preview (`candles`, `sea_pickle`, `turtle_egg` up to 4 per cell!)
         if (StateInspector::isCandleBlock(outFinalBlockId)) {
             int newCount = 1;
             const void* existing = getNativeBlockPtr(placePos);
@@ -782,6 +829,40 @@ public:
             }
             outStateData = static_cast<uint16_t>(newCount);
             outWorldBoxes = StateInspector::buildCandleClusterWorldBoxes(placePos, newCount);
+            return true;
+        }
+        if (StateInspector::isSeaPickleBlock(outFinalBlockId)) {
+            int newCount = 1;
+            const void* existing = getNativeBlockPtr(placePos);
+            if (existing && readBlockIdentifierFromBlock(existing) == outFinalBlockId) {
+                std::vector<BlockStateProperty> exProps;
+                extractBlockStateProperties(existing, exProps);
+                for (const auto& p : exProps) {
+                    if (p.name == "cluster_count") {
+                        newCount = std::clamp(p.value + 2, 1, 4);
+                        break;
+                    }
+                }
+            }
+            outStateData = static_cast<uint16_t>(newCount);
+            outWorldBoxes = StateInspector::buildSeaPickleClusterWorldBoxes(placePos, newCount);
+            return true;
+        }
+        if (StateInspector::isTurtleEggBlock(outFinalBlockId)) {
+            int newCount = 1;
+            const void* existing = getNativeBlockPtr(placePos);
+            if (existing && readBlockIdentifierFromBlock(existing) == outFinalBlockId) {
+                std::vector<BlockStateProperty> exProps;
+                extractBlockStateProperties(existing, exProps);
+                for (const auto& p : exProps) {
+                    if (p.name == "turtle_egg_count") {
+                        newCount = std::clamp(p.value + 2, 1, 4);
+                        break;
+                    }
+                }
+            }
+            outStateData = static_cast<uint16_t>(newCount);
+            outWorldBoxes = StateInspector::buildTurtleEggClusterWorldBoxes(placePos, newCount);
             return true;
         }
 
@@ -860,10 +941,18 @@ public:
         }
 
         // 6. Live Engine Outline Query (`BlockType::getOutline` on the exact placed `const Block*`!)
-        //    Covers ALL 1,150+ vanilla blocks AND 100% of custom addon blocks with exact sub-voxel bounds!
+        //    If live outline returns a generic full 1x1x1 default on a known sub-cube block
+        //    (e.g., item frames, skulls, flower pots, conduits, heavy cores, sculk sensors,
+        //    flowerbeds, crops, wall signs), prefer the exact sub-cube geometry!
         if (placedBlock != nullptr) {
             AABB liveWorldBox{};
             if (queryLiveBlockWorldOutline(placedBlock, mBlockSource, placePos, liveWorldBox)) {
+                if (liveWorldBox.volume() >= 0.99f &&
+                    !multiFallback.empty() &&
+                    multiFallback.front().volume() < 0.99f) {
+                    outWorldBoxes = multiFallback;
+                    return true;
+                }
                 outWorldBoxes = {liveWorldBox};
                 return true;
             }
@@ -1104,10 +1193,14 @@ void onPostDebugRenderEnd(void* debugRenderer, void* renderParams, FnDebugRender
                 const float dist = delta.length();
                 if (dist > 0.05f && dist <= maxReachBlocks + 0.75f) {
                     const float cosAngle = (delta.x * lookDir.x + delta.y * lookDir.y + delta.z * lookDir.z) / dist;
-                    if (cosAngle >= 0.996f) {
+                    const BlockPos engineHitPos{hitBlockRaw[0], hitBlockRaw[1], hitBlockRaw[2]};
+                    const std::string engineHitId = world.getBlockIdentifier(engineHitPos);
+                    if (cosAngle >= 0.996f &&
+                        !StateInspector::isLiquidOrAirBlock(engineHitId) &&
+                        StateInspector::stripNamespace(engineHitId) != "barrier") {
                         ctx.raycast.hasBlockHit = true;
                         ctx.raycast.hitFace = (hitFaceByte <= 5u) ? static_cast<Facing>(hitFaceByte) : Facing::Up;
-                        ctx.raycast.blockPos = {hitBlockRaw[0], hitBlockRaw[1], hitBlockRaw[2]};
+                        ctx.raycast.blockPos = engineHitPos;
                         ctx.raycast.hitWorldPos = hitVec;
                         ctx.raycast.hasLiquidHit = (hitLiquidByte != 0);
                         ctx.raycast.liquidFace = (hitLiquidFaceByte <= 5u) ? static_cast<Facing>(hitLiquidFaceByte) : Facing::Up;

@@ -4,15 +4,15 @@ Smooth, accurate real-time 3D block placement preview mod (`preload-native`, `ar
 
 ## Features
 
-- **Exact 3D Block & Item Shape Accuracy**:
-  - Reads live engine block states and outlines (`ItemStackBase::mBlock`, `BlockTypeRegistry`, `BlockType::getPlacementBlock`, and `BlockType::getOutline`) across vanilla and custom addon blocks while immediately hiding when holding non-placeable tools, weapons, food, or items.
-  - True 3D oriented geometry (`OrientedBox`) for **16-angle standing signs** (wooden post + full-width sign board rotated to your exact yaw angle), **hanging signs** (ceiling dual chains + board & horizontal wall side-arm bracket), **standing & wall banners**, **16-angle skulls & heads**, **angled wall torches**, and **slanted lecterns**.
-  - Multi-part 3D geometry with coplanar interior seam culling for **stairs** (upright, upside-down, outer & inner corners), **slabs & half-slab merges**, **2-block doors** (exact hinge side), **2-block beds** (legs + pillow + 16 dye colors), **walls / fences / panes / iron bars** (live neighbor connections), **fence gates**, **hoppers**, **anvils**, **cauldrons**, **campfires**, **lanterns**, **1–4 candle clusters**, **pots**, **frames**, and **water-surface blocks**.
-- **Smooth 3D Block-to-Block Transition Animation**:
-  - Glides smoothly from block to block instead of popping instantaneously out of nowhere, morphs sub-block slab/rotation changes cleanly, and gently fades in and out when aiming at valid surfaces vs sky/out-of-reach targets.
-- **Interactive Slider Color Changer with Live Swatch Preview**:
-  - Native Mod Menu `#AARRGGBB` slider & spectrum color picker with live visible color preview, quick style presets (`Frosted White`, `Classic Cyan`, `Material Adaptive`, `Crisp Wireframe`, `Subtle Minimal`, `High Contrast`), opacity controls, and clean Bedrock-only settings.
-- **60–120 FPS Center-Crosshair Tracking In both survival and creative Gamemodes**:
+- **Exact 3D Block & Item Shape Accuracy (Above Ground & Underwater)**:
+  - Reads live engine block states and outlines (`ItemStackBase::mBlock`, `BlockTypeRegistry`, `BlockType::getPlacementBlock`, and `BlockType::getOutline`) across vanilla and custom addon blocks while passing cleanly through water, lava, and bubble columns underwater and hiding immediately when holding non-placeable tools, weapons, or items.
+  - True 3D oriented geometry (`OrientedBox`) for **16-angle standing signs** (wooden post + full-width sign board rotated to your exact yaw angle), **hanging signs** (ceiling dual chains + board & horizontal wall side-arm bracket), **standing & wall banners**, **armor stands**, **16-angle skulls & heads**, **angled wall torches**, and **slanted lecterns**.
+  - Multi-part 3D geometry with coplanar interior seam culling for **item frames & glow item frames**, **paintings**, **sea pickles (`1–4` clusters)**, **turtle eggs (`1–4` clusters)**, **candles (`1–4` clusters)**, **conduits**, **heavy cores**, **end rods & lightning rods**, **stairs** (upright, upside-down, outer & inner corners), **slabs & half-slab merges**, **2-block doors** (exact hinge side), **2-block beds** (legs + pillow + 16 dye colors), **walls / fences / panes / iron bars** (live neighbor connections), **fence gates**, **hoppers**, **anvils**, **cauldrons**, **campfires**, **lanterns**, **pots**, **coral & fans**, and **water-surface blocks**.
+- **Smooth 3D Glide & Held-Block Shape Morphing**:
+  - Smoothly glides from block to block AND morphs 3D shapes and rotations continuously whenever switching held items in the hotbar, fading in and out smoothly when aiming at valid surfaces vs open sky.
+- **Inline `A / R / G / B` Color Picker & Persistent Settings**:
+  - Inline Mod Menu `Preview Color` live color preview swatch with direct `A / R / G / B` sliders (`#AARRGGBB`), render style & opacity controls, and automatic disk + session persistence across closing/reopening Mod Menu and restarting the game.
+- **60–120 FPS Center-Crosshair Tracking Across All Gamemodes**:
   - Works seamlessly on both Android Touch Mode and Split Controls across Creative (`11.5m`), Survival (`5.5m`), and Adventure (`5.5m`), hiding cleanly in Spectator mode.
 
 ## Building from Source
