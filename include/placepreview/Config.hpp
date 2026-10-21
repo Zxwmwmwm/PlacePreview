@@ -12,7 +12,7 @@
 namespace placepreview {
 
 struct ModConfig {
-    int schemaVersion{5};
+    int schemaVersion{6};
     bool enabled{true};
 
     // Quick Preset profile ("Frosted White", "Classic Cyan", "Material Adaptive",
@@ -24,6 +24,9 @@ struct ModConfig {
 
     // "Custom Color", "Material Adaptive"
     std::string colorMode{"Custom Color"};
+
+    // Quick color swatch tag ("White", "Cyan", "Emerald", "Gold", "Coral", "Violet", "Red", "Blue", "Custom")
+    std::string colorSwatch{"White"};
 
     // True hardware alpha-blended fill & outline opacity [0.00..1.00]
     float fillOpacity{0.34f};
@@ -54,6 +57,15 @@ struct ModConfig {
         const unsigned int g = static_cast<unsigned int>(std::clamp(accentGreen, 0, 255));
         const unsigned int b = static_cast<unsigned int>(std::clamp(accentBlue, 0, 255));
         std::snprintf(buf, sizeof(buf), "#%02X%02X%02X%02X", a, r, g, b);
+        return std::string(buf);
+    }
+
+    [[nodiscard]] std::string previewColorRgbHex() const {
+        char buf[12]{};
+        const unsigned int r = static_cast<unsigned int>(std::clamp(accentRed, 0, 255));
+        const unsigned int g = static_cast<unsigned int>(std::clamp(accentGreen, 0, 255));
+        const unsigned int b = static_cast<unsigned int>(std::clamp(accentBlue, 0, 255));
+        std::snprintf(buf, sizeof(buf), "#%02X%02X%02X", r, g, b);
         return std::string(buf);
     }
 

@@ -82,6 +82,13 @@ using FnBlockTypeGetPlacementBlock = const void* (*)(
     const Vec3* clickPos,
     int32_t itemValue);
 
+using FnBlockGetRandomOffset  = Vec3 (*)(const void* block, const BlockPos* pos);
+using FnFlowerBedTryGetComp   = const void* (*)(const void* block);
+using FnFlowerBedGetOutline   = AABB (*)(const void* comp, const void* block, const BlockPos* pos);
+using FnBlockPlanterGetId     = const void* (*)();
+using FnItemStackGetComp      = const void* (*)(const void* stack, const void* id);
+using FnTraitStateGetValue    = int32_t (*)(const void* traitState, const void* blockType, uint16_t stateData);
+
 struct ResolvedEngineApi {
     uintptr_t moduleBase{0};
     void* targetDebugRenderEnd{nullptr};
@@ -90,6 +97,11 @@ struct ResolvedEngineApi {
     FnActorGetDimBlockSrc actorGetBlockSource{nullptr};
     FnPlayerIsCreative playerIsCreative{nullptr};
     FnEntityGetGameType entityGetPlayerGameType{nullptr};
+    FnBlockGetRandomOffset blockGetRandomOffset{nullptr};
+    FnFlowerBedTryGetComp flowerBedTryGetComp{nullptr};
+    FnFlowerBedGetOutline flowerBedGetOutline{nullptr};
+    FnBlockPlanterGetId blockPlanterGetId{nullptr};
+    FnItemStackGetComp itemStackGetComp{nullptr};
     bool fastRva{false};
 };
 
@@ -130,14 +142,14 @@ std::thread gAsyncFallbackThread;
         return 0u;
     }
     uint32_t word = 0u;
-    std::memcpy(&word, reinterpret_cast<const void*>(addr), sizeof(uint32_t));
+    std::memcpy(&word, sig::untagPtr(reinterpret_cast<const void*>(addr)), sizeof(uint32_t));
     return word;
 }
 
 template <typename T>
 bool readFieldSafe(const void* base, uintptr_t offset, T& outVal) noexcept {
     if (!sig::isValidUserAddress(base, 1)) return false;
-    const auto* bytePtr = static_cast<const uint8_t*>(base) + offset;
+    const auto* bytePtr = sig::untagPtr(static_cast<const uint8_t*>(base)) + offset;
     if (!sig::isValidUserAddress(bytePtr, 1)) return false;
     std::memcpy(&outVal, bytePtr, sizeof(T));
     return true;
@@ -171,6 +183,23 @@ std::string readHashedString(const void* hashedStrAddr) {
     return std::string(sv);
 }
 
+std::string readBlockIdentifierFromBlockType(const void* bt) {
+    if (!sig::isValidUserAddress(bt, alignof(void*))) {
+        return {};
+    }
+    const auto fullSv = sig::readLibcxxStringView(
+        sig::untagPtr(static_cast<const uint8_t*>(bt)) + sig::off::BlockType_FullNameStr);
+    if (!fullSv.empty()) {
+        return std::string(fullSv);
+    }
+    const auto rawSv = sig::readLibcxxStringView(
+        sig::untagPtr(static_cast<const uint8_t*>(bt)) + sig::off::BlockType_RawNameStr);
+    if (!rawSv.empty()) {
+        return "minecraft:" + std::string(rawSv);
+    }
+    return {};
+}
+
 std::string readBlockIdentifierFromBlock(const void* blockPtr) {
     if (!sig::isValidUserAddress(blockPtr, alignof(void*))) return {};
     const void* bt = nullptr;
@@ -178,15 +207,7 @@ std::string readBlockIdentifierFromBlock(const void* blockPtr) {
         !sig::isValidUserAddress(bt, alignof(void*))) {
         return {};
     }
-    const auto fullSv = sig::readLibcxxStringView(static_cast<const uint8_t*>(bt) + sig::off::BlockType_FullNameStr);
-    if (!fullSv.empty()) {
-        return std::string(fullSv);
-    }
-    const auto rawSv = sig::readLibcxxStringView(static_cast<const uint8_t*>(bt) + sig::off::BlockType_RawNameStr);
-    if (!rawSv.empty()) {
-        return "minecraft:" + std::string(rawSv);
-    }
-    return {};
+    return readBlockIdentifierFromBlockType(bt);
 }
 
 // Walks BlockTypeRegistry's std::map<HashedString, shared_ptr<BlockType>> strictly read-only
@@ -313,65 +334,236 @@ void extractBlockStateProperties(const void* blockPtr, std::vector<BlockStatePro
         return;
     }
 
-    const auto* treeBase = static_cast<const uint8_t*>(bt) + sig::off::BlockType_StatesTree;
+    const auto* btBytes = sig::untagPtr(static_cast<const uint8_t*>(bt));
+
+    // 1. Classic BlockStateInstance RB-tree at BlockType + 0x1a8
+    //    Verified at 0x10548dc8 & 0x1041e0c0:
+    //      +0x1a8: __begin_node_
+    //      +0x1b0: __pair1_ (__end_node_ header)
+    //      +0x1b8: __pair3_ (tree size)
+    //      node + 0x2c: numBits, node + 0x30: endBit, node + 0x34: mask, node + 0x40: mState*
+    const auto* treeBase = btBytes + sig::off::BlockType_StatesMap;
     const void* endNode = static_cast<const void*>(treeBase + 0x08);
     const void* curr = nullptr;
     std::size_t treeCount = 0;
-    if (!readFieldSafe(treeBase, 0x00, curr) || !readFieldSafe(treeBase, 0x10, treeCount)) {
-        return;
-    }
-    if (treeCount == 0 || treeCount > 32) return;
-
-    int steps = 0;
-    while (curr != nullptr && curr != endNode && steps < 64 && sig::isValidUserAddress(curr, alignof(void*))) {
-        ++steps;
-        uint32_t startBit = 0;
-        uint32_t numBits = 0;
-        const void* stateDef = nullptr;
-        if (readFieldSafe(curr, 0x28, startBit) &&
-            readFieldSafe(curr, 0x2c, numBits) &&
-            readFieldSafe(curr, 0x38, stateDef) &&
-            numBits > 0 && numBits <= 16 && startBit <= 16 &&
-            sig::isValidUserAddress(stateDef, alignof(void*))) {
-            const auto nameSv = sig::readLibcxxStringView(static_cast<const uint8_t*>(stateDef) + 0x18);
-            if (!nameSv.empty()) {
-                const uint32_t shift = (startBit + 1u >= numBits) ? (startBit + 1u - numBits) : 0u;
-                const uint32_t mask = (1u << numBits) - 1u;
-                const int val = static_cast<int>((static_cast<uint32_t>(stateData) >> shift) & mask);
-                outProps.push_back(BlockStateProperty{std::string(nameSv), val});
+    if (readFieldSafe(treeBase, 0x00, curr) &&
+        readFieldSafe(treeBase, 0x10, treeCount) &&
+        treeCount > 0 && treeCount <= 32) {
+        curr = sig::untagPtr(curr);
+        int steps = 0;
+        while (curr != nullptr && curr != endNode && steps < 64 &&
+               sig::isValidUserAddress(curr, alignof(void*))) {
+            ++steps;
+            uint32_t numBits = 0;
+            uint32_t endBit = 0;
+            uint32_t mask = 0;
+            const void* stateDef = nullptr;
+            if (readFieldSafe(curr, 0x2c, numBits) &&
+                readFieldSafe(curr, 0x30, endBit) &&
+                readFieldSafe(curr, 0x34, mask) &&
+                readFieldSafe(curr, 0x40, stateDef) &&
+                numBits > 0 && numBits <= 16 && endBit < 16 && endBit + 1u >= numBits &&
+                sig::isValidUserAddress(stateDef, alignof(void*))) {
+                const auto nameSv = sig::readLibcxxStringView(
+                    sig::untagPtr(static_cast<const uint8_t*>(stateDef)) + 0x18);
+                if (!nameSv.empty()) {
+                    const uint32_t shift = (endBit + 1u) - numBits;
+                    const int val = static_cast<int>((static_cast<uint32_t>(stateData) & mask) >> shift);
+                    outProps.push_back(BlockStateProperty{std::string(nameSv), val});
+                }
             }
-        }
 
-        const void* right = nullptr;
-        if (readFieldSafe(curr, 0x08, right) && right != nullptr && sig::isValidUserAddress(right, alignof(void*))) {
-            curr = right;
-            const void* left = nullptr;
-            int guard = 0;
-            while (guard++ < 32 && readFieldSafe(curr, 0x00, left) && left != nullptr &&
-                   sig::isValidUserAddress(left, alignof(void*))) {
-                curr = left;
-            }
-        } else {
-            const void* parent = nullptr;
-            int guard = 0;
-            while (guard++ < 32 && readFieldSafe(curr, 0x10, parent) && parent != nullptr &&
-                   parent != endNode && sig::isValidUserAddress(parent, alignof(void*))) {
-                const void* parentRight = nullptr;
-                if (!readFieldSafe(parent, 0x08, parentRight) || curr != parentRight) {
+            const void* right = nullptr;
+            if (readFieldSafe(curr, 0x08, right) && right != nullptr &&
+                sig::isValidUserAddress(right, alignof(void*))) {
+                curr = sig::untagPtr(right);
+                const void* left = nullptr;
+                int guard = 0;
+                while (guard++ < 32 && readFieldSafe(curr, 0x00, left) && left != nullptr &&
+                       sig::isValidUserAddress(left, alignof(void*))) {
+                    curr = sig::untagPtr(left);
+                }
+            } else {
+                const void* parent = nullptr;
+                int guard = 0;
+                while (guard++ < 32 && readFieldSafe(curr, 0x10, parent) && parent != nullptr &&
+                       sig::untagPtr(parent) != endNode && sig::isValidUserAddress(parent, alignof(void*))) {
+                    parent = sig::untagPtr(parent);
+                    const void* parentRight = nullptr;
+                    if (!readFieldSafe(parent, 0x08, parentRight) ||
+                        curr != sig::untagPtr(parentRight)) {
+                        curr = parent;
+                        parent = nullptr;
+                        break;
+                    }
                     curr = parent;
-                    parent = nullptr;
+                }
+                if (sig::untagPtr(parent) == endNode || guard >= 32) {
                     break;
                 }
-                curr = parent;
-            }
-            if (parent == endNode || guard >= 32) {
-                break;
-            }
-            if (parent != nullptr) {
-                curr = parent;
+                if (parent != nullptr) {
+                    curr = sig::untagPtr(parent);
+                }
             }
         }
     }
+
+    // 2. Modern 1.21-1.26 BlockTrait state vector at BlockType + 0x350..0x358
+    //    Verified at 0x1010c118..0x1010c164 (used by CopperGolemStatueBlock, ShelfBlock, Wildflowers, etc.)!
+    uintptr_t traitBegin = 0;
+    uintptr_t traitEnd = 0;
+    if (readFieldSafe(btBytes, sig::off::BlockType_TraitStatesVec, traitBegin) &&
+        readFieldSafe(btBytes, sig::off::BlockType_TraitStatesVec + 8, traitEnd)) {
+        traitBegin = sig::untagUserAddr(traitBegin);
+        traitEnd = sig::untagUserAddr(traitEnd);
+        if (traitBegin != 0 && traitEnd > traitBegin && ((traitEnd - traitBegin) % 16u) == 0u) {
+            const std::size_t count = (traitEnd - traitBegin) / 16u;
+            if (count <= 16) {
+                for (std::size_t i = 0; i < count; ++i) {
+                    const void* traitState = nullptr;
+                    if (!readFieldSafe(reinterpret_cast<const void*>(traitBegin + i * 16u), 0, traitState) ||
+                        !sig::isValidUserAddress(traitState, alignof(void*))) {
+                        continue;
+                    }
+                    const void* stateDef = nullptr;
+                    if (!readFieldSafe(traitState, 0x08, stateDef) ||
+                        !sig::isValidUserAddress(stateDef, alignof(void*))) {
+                        continue;
+                    }
+                    const auto nameSv = sig::readLibcxxStringView(
+                        sig::untagPtr(static_cast<const uint8_t*>(stateDef)) + 0x18);
+                    if (nameSv.empty()) continue;
+
+                    bool alreadyPresent = false;
+                    for (const auto& existing : outProps) {
+                        if (existing.name == nameSv) {
+                            alreadyPresent = true;
+                            break;
+                        }
+                    }
+                    if (alreadyPresent) continue;
+
+                    const auto fnGetVal = readVtableFn<FnTraitStateGetValue>(traitState, 0x00);
+                    if (fnGetVal) {
+                        const int val = static_cast<int>(fnGetVal(traitState, bt, stateData));
+                        outProps.push_back(BlockStateProperty{std::string(nameSv), val});
+                    }
+                }
+            }
+        }
+    }
+}
+
+Vec3 queryNativeBlockRandomOffset(const void* blockPtr, const BlockPos& pos) noexcept {
+    if (!gApi.blockGetRandomOffset || !sig::isValidUserAddress(blockPtr, alignof(void*))) {
+        return {0.0f, 0.0f, 0.0f};
+    }
+    Vec3 off = gApi.blockGetRandomOffset(blockPtr, &pos);
+    if (!std::isfinite(off.x) || std::fabs(off.x) > 0.5f) off.x = 0.0f;
+    if (!std::isfinite(off.y) || std::fabs(off.y) > 0.5f) off.y = 0.0f;
+    if (!std::isfinite(off.z) || std::fabs(off.z) > 0.5f) off.z = 0.0f;
+    return off;
+}
+
+bool queryNativeFlowerBedOutline(const void* blockPtr, const BlockPos& pos, AABB& outBox) noexcept {
+    if (!gApi.flowerBedTryGetComp || !gApi.flowerBedGetOutline ||
+        !sig::isValidUserAddress(blockPtr, alignof(void*))) {
+        return false;
+    }
+    const void* comp = gApi.flowerBedTryGetComp(blockPtr);
+    if (!sig::isValidUserAddress(comp, alignof(void*))) {
+        return false;
+    }
+    AABB candidate = gApi.flowerBedGetOutline(comp, blockPtr, &pos);
+    if (std::isfinite(candidate.min.x) && std::isfinite(candidate.min.y) && std::isfinite(candidate.min.z) &&
+        std::isfinite(candidate.max.x) && std::isfinite(candidate.max.y) && std::isfinite(candidate.max.z)) {
+        candidate = candidate.normalized();
+        if (!candidate.isDegenerate() &&
+            candidate.sizeX() <= 2.0f && candidate.sizeY() <= 2.0f && candidate.sizeZ() <= 2.0f) {
+            outBox = candidate;
+            return true;
+        }
+    }
+    return false;
+}
+
+const void* findFlowerBedPermutation(const void* bt, int targetGrowth, Facing targetFacing) {
+    if (!sig::isValidUserAddress(bt, alignof(void*))) return nullptr;
+    uintptr_t vecBegin = 0;
+    uintptr_t vecEnd = 0;
+    if (!readFieldSafe(bt, sig::off::BlockType_PermutationsVec, vecBegin) ||
+        !readFieldSafe(bt, sig::off::BlockType_PermutationsVec + 8, vecEnd)) {
+        return nullptr;
+    }
+    vecBegin = sig::untagUserAddr(vecBegin);
+    vecEnd = sig::untagUserAddr(vecEnd);
+    if (vecBegin == 0 || vecEnd <= vecBegin) return nullptr;
+    const std::size_t count = (vecEnd - vecBegin) / sizeof(void*);
+    if (count == 0 || count > 64) return nullptr;
+
+    const void* growthFallback = nullptr;
+    std::vector<BlockStateProperty> props;
+    for (std::size_t i = 0; i < count; ++i) {
+        const void* permBlk = nullptr;
+        if (!readFieldSafe(reinterpret_cast<const void*>(vecBegin + i * sizeof(void*)), 0, permBlk) ||
+            !sig::isValidUserAddress(permBlk, alignof(void*))) {
+            continue;
+        }
+        extractBlockStateProperties(permBlk, props);
+        int g = -1;
+        Facing f = Facing::South;
+        for (const auto& p : props) {
+            if (p.name == "growth") {
+                g = p.value;
+            } else if (p.name == "minecraft:cardinal_direction" || p.name == "direction") {
+                switch (p.value & 3) {
+                    case 0: f = Facing::South; break;
+                    case 1: f = Facing::West;  break;
+                    case 2: f = Facing::North; break;
+                    case 3: f = Facing::East;  break;
+                }
+            }
+        }
+        if (g == targetGrowth) {
+            if (!growthFallback) growthFallback = permBlk;
+            if (f == targetFacing) return permBlk;
+        }
+    }
+    return growthFallback;
+}
+
+const void* resolveDirectItemStackBlockType(const void* stackPtr, const void* itemPtr) {
+    if (!sig::isValidUserAddress(stackPtr, alignof(void*))) return nullptr;
+    const void* blockPtr = nullptr;
+    if (readFieldSafe(stackPtr, sig::off::ItemStack_BlockPtr, blockPtr) &&
+        sig::isValidUserAddress(blockPtr, alignof(void*))) {
+        const void* bt = nullptr;
+        if (readFieldSafe(blockPtr, sig::off::Block_BlockTypePtr, bt) &&
+            sig::isValidUserAddress(bt, alignof(void*))) {
+            return bt;
+        }
+    }
+    if (sig::isValidUserAddress(itemPtr, alignof(void*))) {
+        const void* itemBt = nullptr;
+        if (readFieldSafe(itemPtr, sig::off::Item_BlockTypePtr, itemBt) &&
+            sig::isValidUserAddress(itemBt, alignof(void*))) {
+            return itemBt;
+        }
+    }
+    if (gApi.blockPlanterGetId && gApi.itemStackGetComp) {
+        const void* compId = gApi.blockPlanterGetId();
+        if (sig::isValidUserAddress(compId, alignof(void*))) {
+            const void* planterComp = gApi.itemStackGetComp(stackPtr, compId);
+            if (sig::isValidUserAddress(planterComp, alignof(void*))) {
+                const void* compBt = nullptr;
+                if (readFieldSafe(planterComp, 0x10, compBt) &&
+                    sig::isValidUserAddress(compBt, alignof(void*))) {
+                    return compBt;
+                }
+            }
+        }
+    }
+    return nullptr;
 }
 
 HeldItemInput inspectItemStack(const void* stackPtr) {
@@ -402,12 +594,8 @@ HeldItemInput inspectItemStack(const void* stackPtr) {
     }
     if (itemFull.empty()) return out;
 
-    const void* blockPtr = nullptr;
-    std::string directBlockId;
-    if (readFieldSafe(stackPtr, sig::off::ItemStack_BlockPtr, blockPtr) &&
-        sig::isValidUserAddress(blockPtr, alignof(void*))) {
-        directBlockId = readBlockIdentifierFromBlock(blockPtr);
-    }
+    const void* directBt = resolveDirectItemStackBlockType(stackPtr, itemPtr);
+    std::string directBlockId = readBlockIdentifierFromBlockType(directBt);
 
     out.valid = true;
     out.count = static_cast<int>(count);
@@ -485,12 +673,15 @@ public:
         const std::string_view n = StateInspector::stripNamespace(id);
         if (n.empty() || n == "air" || n == "cave_air" || n == "void_air" ||
             n == "water" || n == "flowing_water" || n == "lava" || n == "flowing_lava" ||
-            n == "short_grass" || n == "tallgrass" || n == "fern" || n == "large_fern" ||
-            n == "deadbush" || n == "fire" || n == "soul_fire" || n == "vine" ||
-            n == "glow_lichen" || n == "sculk_vein" || n == "structure_void" ||
-            n == "light_block" || n == "seagrass" || n == "tall_seagrass" ||
+            n == "short_grass" || n == "tallgrass" || n == "tall_grass" || n == "fern" ||
+            n == "large_fern" || n == "deadbush" || n == "bush" ||
+            n == "short_dry_grass" || n == "tall_dry_grass" ||
+            n == "fire" || n == "soul_fire" || n == "vine" ||
+            n == "glow_lichen" || n == "sculk_vein" || n == "resin_clump" ||
+            n == "structure_void" || n == "light_block" ||
+            n == "seagrass" || n == "tall_seagrass" ||
             n == "crimson_roots" || n == "warped_roots" || n == "nether_sprouts" ||
-            n == "pink_petals" || n == "leaf_litter" || n == "wildflowers") {
+            n == "leaf_litter") {
             return true;
         }
         if (n == "snow_layer") {
@@ -551,6 +742,26 @@ public:
                 }
             }
             return StateInspector::buildCandleClusterWorldBoxes(pos, count);
+        }
+
+        if (StateInspector::isFlowerBedBlock(id)) {
+            AABB liveBed{};
+            if (queryNativeFlowerBedOutline(blk, pos, liveBed)) {
+                return {liveBed};
+            }
+            int count = 1;
+            std::vector<BlockStateProperty> props;
+            extractBlockStateProperties(blk, props);
+            for (const auto& p : props) {
+                if (p.name == "growth") {
+                    count = std::clamp(p.value + 1, 1, 4);
+                    break;
+                }
+            }
+            const OrientationSummary orient = StateInspector::decodeOrientation(
+                id, props, Facing::Up, Vec3{0.5f, 0.5f, 0.5f}, 0.0f, 0.0f, false);
+            return StateInspector::buildFlowerBedClusterWorldBoxes(
+                pos, count, orient.facing, queryNativeBlockRandomOffset(blk, pos));
         }
 
         // Multi-part blocks use exact multi-sub-box raycast geometry (stairs, fences, walls, hoppers).
@@ -624,7 +835,7 @@ public:
             }
         }
 
-        // 2. Multi-cluster blocks (`candles`, `sea_pickle`, `turtle_egg`: up to 4 per cell!).
+        // 2. Multi-cluster blocks (`candles`, `sea_pickle`, `turtle_egg`, `pink_petals`, `wildflowers`, `leaf_litter`: up to 4 per cell!).
         auto canStackClusterAt = [&](const BlockPos& cell) -> bool {
             const void* blk = getNativeBlockPtr(cell);
             if (!blk) return false;
@@ -644,13 +855,18 @@ public:
                 for (const auto& p : props) {
                     if (p.name == "turtle_egg_count") return p.value < 3;
                 }
+            } else if (StateInspector::isFlowerBedBlock(placeId)) {
+                for (const auto& p : props) {
+                    if (p.name == "growth") return p.value < 3;
+                }
             }
             return false;
         };
 
         if ((StateInspector::isCandleBlock(placeId) ||
              StateInspector::isSeaPickleBlock(placeId) ||
-             StateInspector::isTurtleEggBlock(placeId)) &&
+             StateInspector::isTurtleEggBlock(placeId) ||
+             StateInspector::isFlowerBedBlock(placeId)) &&
             canStackClusterAt(inOutPos)) {
             inOutFace = Facing::Up;
             return true;
@@ -701,7 +917,8 @@ public:
         }
         if ((StateInspector::isCandleBlock(placeId) ||
              StateInspector::isSeaPickleBlock(placeId) ||
-             StateInspector::isTurtleEggBlock(placeId)) &&
+             StateInspector::isTurtleEggBlock(placeId) ||
+             StateInspector::isFlowerBedBlock(placeId)) &&
             canStackClusterAt(target)) {
             inOutPos = target;
             inOutFace = Facing::Up;
@@ -749,17 +966,21 @@ public:
         outWorldBoxes.clear();
         outOrientedBoxes.clear();
 
-        // Resolve live BlockType* directly from ItemStack::mBlock (+0x18) or read-only BlockTypeRegistry!
+        // Resolve live BlockType* directly from ItemStack::mBlock (+0x18), Item::mBlockType (+0x138),
+        // BlockPlanterItemComponent (+0x10), or read-only BlockTypeRegistry!
         const void* targetBlockType = nullptr;
         if (item.nativeItemStackPtr != 0) {
             const auto* stackPtr = reinterpret_cast<const void*>(item.nativeItemStackPtr);
-            const void* directBlk = nullptr;
-            if (readFieldSafe(stackPtr, sig::off::ItemStack_BlockPtr, directBlk) &&
-                sig::isValidUserAddress(directBlk, alignof(void*))) {
-                const std::string directId = readBlockIdentifierFromBlock(directBlk);
-                if (directId == resolvedBlockIdentifier) {
-                    (void)readFieldSafe(directBlk, sig::off::Block_BlockTypePtr, targetBlockType);
-                }
+            const void* weakRef = nullptr;
+            const void* itemPtr = nullptr;
+            if (readFieldSafe(stackPtr, sig::off::ItemStack_ItemWeakPtr, weakRef) &&
+                sig::isValidUserAddress(weakRef, alignof(void*))) {
+                (void)readFieldSafe(weakRef, 0, itemPtr);
+            }
+            const void* directBt = resolveDirectItemStackBlockType(stackPtr, itemPtr);
+            if (sig::isValidUserAddress(directBt, alignof(void*)) &&
+                readBlockIdentifierFromBlockType(directBt) == resolvedBlockIdentifier) {
+                targetBlockType = directBt;
             }
         }
         if (!sig::isValidUserAddress(targetBlockType, alignof(void*))) {
@@ -865,6 +1086,41 @@ public:
             outWorldBoxes = StateInspector::buildTurtleEggClusterWorldBoxes(placePos, newCount);
             return true;
         }
+        if (StateInspector::isFlowerBedBlock(outFinalBlockId)) {
+            int newCount = 1;
+            Facing bedFacing = orient.facing;
+            const void* existing = getNativeBlockPtr(placePos);
+            if (existing && readBlockIdentifierFromBlock(existing) == outFinalBlockId) {
+                std::vector<BlockStateProperty> exProps;
+                extractBlockStateProperties(existing, exProps);
+                const OrientationSummary exOrient = StateInspector::decodeOrientation(
+                    outFinalBlockId, exProps, face, subClickPos, mPitchDeg, mYawDeg, mIsSneaking);
+                bedFacing = exOrient.facing;
+                for (const auto& p : exProps) {
+                    if (p.name == "growth") {
+                        newCount = std::clamp(p.value + 2, 1, 4);
+                        break;
+                    }
+                }
+            }
+            outStateData = static_cast<uint16_t>((newCount << 2u) | static_cast<int>(bedFacing));
+            const void* bedBlk = placedBlock;
+            if (newCount > 1 && sig::isValidUserAddress(targetBlockType, alignof(void*))) {
+                const void* perm = findFlowerBedPermutation(targetBlockType, newCount - 1, bedFacing);
+                if (perm != nullptr) {
+                    bedBlk = perm;
+                }
+            }
+            AABB nativeBed{};
+            if (bedBlk != nullptr && queryNativeFlowerBedOutline(bedBlk, placePos, nativeBed)) {
+                outWorldBoxes = {nativeBed};
+                return true;
+            }
+            const Vec3 rndOff = (bedBlk != nullptr) ? queryNativeBlockRandomOffset(bedBlk, placePos) : Vec3{};
+            outWorldBoxes = StateInspector::buildFlowerBedClusterWorldBoxes(
+                placePos, newCount, bedFacing, rndOff);
+            return true;
+        }
 
         // 3. Dynamic neighbor-aware Corner Stairs
         if (StateInspector::isStairBlock(outFinalBlockId)) {
@@ -928,29 +1184,58 @@ public:
         // 5. True 3D Oriented Models (16-angle standing signs, hanging signs, banners, skulls,
         //    angled wall torches, slanted lecterns) + multi-part models (hoppers, anvils, gates,
         //    cauldrons, campfires, lanterns, brewing stands, decorated pots)!
+        const Vec3 nativeRndOff = (placedBlock != nullptr)
+            ? queryNativeBlockRandomOffset(placedBlock, placePos)
+            : Vec3{};
+
+        auto withRndOff = [&](std::vector<AABB> boxes) -> std::vector<AABB> {
+            if (std::fabs(nativeRndOff.x) > 1e-5f ||
+                std::fabs(nativeRndOff.y) > 1e-5f ||
+                std::fabs(nativeRndOff.z) > 1e-5f) {
+                for (auto& b : boxes) {
+                    b = b.translated(nativeRndOff);
+                }
+            }
+            return boxes;
+        };
+
         outOrientedBoxes = StateInspector::buildSpecialOrientedBoxes(placePos, outFinalBlockId, orient);
         if (!outOrientedBoxes.empty()) {
             outWorldBoxes = StateInspector::buildFallbackBlockBoxes(placePos, outFinalBlockId, orient);
             return true;
         }
 
+        if (StateInspector::isTallPlantBlock(outFinalBlockId)) {
+            if (placedBlock != nullptr) {
+                AABB liveWorldBox{};
+                if (queryLiveBlockWorldOutline(placedBlock, mBlockSource, placePos, liveWorldBox)) {
+                    liveWorldBox.max.y = std::max(liveWorldBox.max.y, static_cast<float>(placePos.y) + 2.0f);
+                    outWorldBoxes = {liveWorldBox};
+                    return true;
+                }
+            }
+            outWorldBoxes = withRndOff(StateInspector::buildFallbackBlockBoxes(placePos, outFinalBlockId, orient));
+            return true;
+        }
+
         const auto multiFallback = StateInspector::buildFallbackBlockBoxes(placePos, outFinalBlockId, orient);
         if (multiFallback.size() > 1) {
-            outWorldBoxes = multiFallback;
+            outWorldBoxes = withRndOff(multiFallback);
             return true;
         }
 
         // 6. Live Engine Outline Query (`BlockType::getOutline` on the exact placed `const Block*`!)
+        //    Automatically includes vanilla's per-cell RandomOffset for flowers, ferns, bamboo, etc.
         //    If live outline returns a generic full 1x1x1 default on a known sub-cube block
         //    (e.g., item frames, skulls, flower pots, conduits, heavy cores, sculk sensors,
-        //    flowerbeds, crops, wall signs), prefer the exact sub-cube geometry!
+        //    crops, wall signs), prefer the exact sub-cube geometry!
         if (placedBlock != nullptr) {
             AABB liveWorldBox{};
             if (queryLiveBlockWorldOutline(placedBlock, mBlockSource, placePos, liveWorldBox)) {
                 if (liveWorldBox.volume() >= 0.99f &&
                     !multiFallback.empty() &&
                     multiFallback.front().volume() < 0.99f) {
-                    outWorldBoxes = multiFallback;
+                    outWorldBoxes = withRndOff(multiFallback);
                     return true;
                 }
                 outWorldBoxes = {liveWorldBox};
@@ -958,7 +1243,7 @@ public:
             }
         }
 
-        outWorldBoxes = multiFallback;
+        outWorldBoxes = withRndOff(multiFallback);
         return true;
     }
 
@@ -1365,10 +1650,23 @@ bool EngineBridge::installHooks() {
         fastApi.entityGetPlayerGameType = reinterpret_cast<FnEntityGetGameType>(
             resolveRvaChecked(base, sig::rva::Entity_getPlayerGameType, sig::rva::Entity_getPlayerGameType_W10));
 
+        const void* regPtr = nullptr;
         if (readInsnWord(base + sig::rva::BlockTypeRegistry_getter) == sig::rva::BlockTypeRegistry_getter_W0 &&
-            readInsnWord(base + sig::rva::BlockTypeRegistry_getter + 4) == sig::rva::BlockTypeRegistry_getter_W4) {
-            fastApi.blockTypeRegistry = reinterpret_cast<const void*>(base + sig::rva::BlockTypeRegistry_global);
+            readInsnWord(base + sig::rva::BlockTypeRegistry_getter + 4) == sig::rva::BlockTypeRegistry_getter_W4 &&
+            readFieldSafe(reinterpret_cast<const void*>(base + sig::rva::BlockTypeRegistry_ptr), 0, regPtr) &&
+            sig::isValidUserAddress(regPtr, alignof(void*))) {
+            fastApi.blockTypeRegistry = regPtr;
         }
+        fastApi.blockGetRandomOffset = reinterpret_cast<FnBlockGetRandomOffset>(
+            resolveRvaChecked(base, sig::rva::Block_getRandomOffset, sig::rva::Block_getRandomOffset_W10));
+        fastApi.flowerBedTryGetComp = reinterpret_cast<FnFlowerBedTryGetComp>(
+            resolveRvaChecked(base, sig::rva::FlowerBed_tryGetComp, sig::rva::FlowerBed_tryGetComp_W10));
+        fastApi.flowerBedGetOutline = reinterpret_cast<FnFlowerBedGetOutline>(
+            resolveRvaChecked(base, sig::rva::FlowerBed_getOutline, sig::rva::FlowerBed_getOutline_W10));
+        fastApi.blockPlanterGetId = reinterpret_cast<FnBlockPlanterGetId>(
+            resolveRvaChecked(base, sig::rva::BlockPlanterComp_getId, sig::rva::BlockPlanterComp_getId_W10));
+        fastApi.itemStackGetComp = reinterpret_cast<FnItemStackGetComp>(
+            resolveRvaChecked(base, sig::rva::ItemStack_getComp, sig::rva::ItemStack_getComp_W10));
 
         if (attachDebugRenderHookLocked(fastApi)) {
             return true;

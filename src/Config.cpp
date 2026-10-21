@@ -13,6 +13,53 @@ namespace placepreview {
 
 namespace {
 
+struct NamedColorSwatch {
+    std::string_view name;
+    int r;
+    int g;
+    int b;
+};
+
+constexpr NamedColorSwatch kColorSwatches[] = {
+    {"White",   255, 255, 255},
+    {"Cyan",     72, 200, 255},
+    {"Emerald",  82, 232, 136},
+    {"Gold",    255, 212,  59},
+    {"Coral",   255, 118,  98},
+    {"Violet",  182, 116, 255},
+    {"Red",     244,  68,  68},
+    {"Blue",     78, 142, 255},
+};
+
+void syncColorSwatchUnlocked(ModConfig& cfg) noexcept {
+    for (const auto& sw : kColorSwatches) {
+        if (cfg.accentRed == sw.r && cfg.accentGreen == sw.g && cfg.accentBlue == sw.b) {
+            cfg.colorSwatch = std::string(sw.name);
+            return;
+        }
+    }
+    cfg.colorSwatch = "Custom";
+}
+
+bool applyColorSwatchUnlocked(ModConfig& cfg, std::string_view name) noexcept {
+    for (const auto& sw : kColorSwatches) {
+        if (sw.name == name) {
+            cfg.accentRed = sw.r;
+            cfg.accentGreen = sw.g;
+            cfg.accentBlue = sw.b;
+            cfg.colorSwatch = std::string(sw.name);
+            cfg.colorMode = "Custom Color";
+            cfg.preset = "Custom";
+            return true;
+        }
+    }
+    if (name == "Custom") {
+        cfg.colorSwatch = "Custom";
+        return true;
+    }
+    return false;
+}
+
 std::string jsonEscape(std::string_view s) {
     std::string out;
     out.reserve(s.size() + 4);
@@ -109,7 +156,6 @@ bool writeTextFileRobust(const std::filesystem::path& path, const std::string& d
                 if (!ec) {
                     return true;
                 }
-                // Android FUSE / Scoped Storage fallback when rename over existing file fails:
                 ec.clear();
                 std::filesystem::copy_file(
                     tmpPath, path, std::filesystem::copy_options::overwrite_existing, ec);
@@ -122,7 +168,6 @@ bool writeTextFileRobust(const std::filesystem::path& path, const std::string& d
         }
     }
 
-    // Final direct write fallback if temporary file creation/copy fails on restricted storage:
     std::error_code rmEc;
     std::filesystem::remove(tmpPath, rmEc);
     std::ofstream directOfs(path, std::ios::out | std::ios::binary | std::ios::trunc);
@@ -167,8 +212,6 @@ void applyPresetUnlocked(ModConfig& cfg, std::string_view presetName) {
         cfg.preset = "Crisp Wireframe";
         cfg.renderMode = "Wireframe Only";
         cfg.colorMode = "Custom Color";
-        // Preserve non-zero fillOpacity so switching Render Style back to Shaded/Translucent Fill
-        // is immediately visible without manual slider recovery.
         if (cfg.fillOpacity < 0.10f) {
             cfg.fillOpacity = 0.34f;
         }
@@ -202,6 +245,7 @@ void applyPresetUnlocked(ModConfig& cfg, std::string_view presetName) {
     } else if (presetName == "Custom" || presetName == "6") {
         cfg.preset = "Custom";
     }
+    syncColorSwatchUnlocked(cfg);
 }
 
 } // namespace
@@ -306,7 +350,9 @@ void ConfigManager::applyKeyValue(std::string_view key, std::string_view value) 
         mConfig.enabled = parseBoolToken(value, mConfig.enabled);
     } else if (key == "preset") {
         applyPresetUnlocked(mConfig, value);
-    } else if (key == "previewColor") {
+    } else if (key == "colorSwatch") {
+        (void)applyColorSwatchUnlocked(mConfig, value);
+    } else if (key == "previewColor" || key == "previewColorHex") {
         int r = mConfig.accentRed;
         int g = mConfig.accentGreen;
         int b = mConfig.accentBlue;
@@ -318,6 +364,7 @@ void ConfigManager::applyKeyValue(std::string_view key, std::string_view value) 
             mConfig.accentAlpha = a;
             mConfig.colorMode = "Custom Color";
             mConfig.preset = "Custom";
+            syncColorSwatchUnlocked(mConfig);
         }
     } else if (key == "renderMode") {
         if (value == "Shaded + Wireframe" || value == "0") {
@@ -353,14 +400,17 @@ void ConfigManager::applyKeyValue(std::string_view key, std::string_view value) 
         mConfig.accentRed = parseIntToken(value, mConfig.accentRed, 0, 255);
         mConfig.colorMode = "Custom Color";
         mConfig.preset = "Custom";
+        syncColorSwatchUnlocked(mConfig);
     } else if (key == "accentGreen") {
         mConfig.accentGreen = parseIntToken(value, mConfig.accentGreen, 0, 255);
         mConfig.colorMode = "Custom Color";
         mConfig.preset = "Custom";
+        syncColorSwatchUnlocked(mConfig);
     } else if (key == "accentBlue") {
         mConfig.accentBlue = parseIntToken(value, mConfig.accentBlue, 0, 255);
         mConfig.colorMode = "Custom Color";
         mConfig.preset = "Custom";
+        syncColorSwatchUnlocked(mConfig);
     } else if (key == "accentAlpha") {
         mConfig.accentAlpha = parseIntToken(value, mConfig.accentAlpha, 0, 255);
         mConfig.preset = "Custom";
@@ -390,6 +440,7 @@ std::string ConfigManager::serializeJson(const ModConfig& cfg) {
         << "  \"schemaVersion\": " << cfg.schemaVersion << ",\n"
         << "  \"enabled\": " << (cfg.enabled ? "true" : "false") << ",\n"
         << "  \"preset\": \"" << jsonEscape(cfg.preset) << "\",\n"
+        << "  \"colorSwatch\": \"" << jsonEscape(cfg.colorSwatch) << "\",\n"
         << "  \"previewColor\": \"" << cfg.previewColorHex() << "\",\n"
         << "  \"renderMode\": \"" << jsonEscape(cfg.renderMode) << "\",\n"
         << "  \"colorMode\": \"" << jsonEscape(cfg.colorMode) << "\",\n"
@@ -437,6 +488,7 @@ ModConfig ConfigManager::parseJson(std::string_view jsonText) {
             cfg.accentAlpha = a;
         }
     }
+    syncColorSwatchUnlocked(cfg);
     if (extractRawField(jsonText, "smoothAnimation", tok)) cfg.smoothAnimation = parseBoolToken(tok, cfg.smoothAnimation);
     if (extractRawField(jsonText, "animationSpeed", tok)) cfg.animationSpeed = parseFloatToken(tok, cfg.animationSpeed, 4.0f, 40.0f);
     if (extractRawField(jsonText, "directionalShading", tok)) cfg.directionalShading = parseBoolToken(tok, cfg.directionalShading);

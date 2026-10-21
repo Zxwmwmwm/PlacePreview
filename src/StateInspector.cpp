@@ -68,16 +68,15 @@ Facing facingFromWeirdoDirection(int val) noexcept {
     return Facing::North;
 }
 
-bool isFlowerOrSmallPlantName(const std::string& n) noexcept {
-    return endsWith(n, "_sapling") ||
-           endsWith(n, "_flower") ||
-           endsWith(n, "_tulip") ||
+bool isPureFlowerStemName(const std::string& n) noexcept {
+    return endsWith(n, "_tulip") ||
            endsWith(n, "_mushroom") ||
            endsWith(n, "_fungus") ||
-           endsWith(n, "_roots") ||
-           endsWith(n, "_sprouts") ||
            n == "dandelion" ||
+           n == "golden_dandelion" ||
            n == "poppy" ||
+           n == "red_flower" ||
+           n == "yellow_flower" ||
            n == "blue_orchid" ||
            n == "allium" ||
            n == "azure_bluet" ||
@@ -88,9 +87,19 @@ bool isFlowerOrSmallPlantName(const std::string& n) noexcept {
            n == "torchflower" ||
            n == "open_eyeblossom" ||
            n == "closed_eyeblossom" ||
-           n == "eyeblossom" ||
-           n == "golden_dandelion" ||
+           n == "eyeblossom";
+}
+
+bool isFlowerOrSmallPlantName(const std::string& n) noexcept {
+    return isPureFlowerStemName(n) ||
+           endsWith(n, "_sapling") ||
+           endsWith(n, "_flower") ||
+           endsWith(n, "_roots") ||
+           endsWith(n, "_sprouts") ||
+           n == "mangrove_propagule" ||
+           n == "pale_hanging_moss" ||
            n == "cactus_flower" ||
+           n == "bush" ||
            n == "firefly_bush" ||
            n == "sweet_berry_bush" ||
            n == "short_grass" ||
@@ -206,6 +215,29 @@ bool StateInspector::isFlowerBedBlock(std::string_view id) noexcept {
     return n == "pink_petals" || n == "wildflowers" || n == "leaf_litter";
 }
 
+bool StateInspector::isTallPlantBlock(std::string_view id) noexcept {
+    const std::string n = lowerAscii(stripNamespace(id));
+    return n == "sunflower" ||
+           n == "lilac" ||
+           n == "rose_bush" ||
+           n == "peony" ||
+           n == "pitcher_plant" ||
+           n == "tall_grass" ||
+           n == "large_fern" ||
+           n == "small_dripleaf_block" ||
+           n == "double_plant";
+}
+
+bool StateInspector::isCopperGolemStatue(std::string_view id) noexcept {
+    const std::string n = lowerAscii(stripNamespace(id));
+    return n == "copper_golem_statue" || endsWith(n, "_copper_golem_statue");
+}
+
+bool StateInspector::isShelfBlock(std::string_view id) noexcept {
+    const std::string n = lowerAscii(stripNamespace(id));
+    return endsWith(n, "_shelf") && !endsWith(n, "bookshelf");
+}
+
 bool StateInspector::isLiquidOrAirBlock(std::string_view id) noexcept {
     const std::string n = lowerAscii(stripNamespace(id));
     return n.empty() ||
@@ -312,6 +344,11 @@ bool StateInspector::isHorizontalDirectionalBlock(std::string_view id) noexcept 
            n == "ladder" ||
            n == "tripwire_hook" ||
            n == "painting" ||
+           isCopperGolemStatue(n) ||
+           isShelfBlock(n) ||
+           isFlowerBedBlock(n) ||
+           n == "dried_ghast" ||
+           n == "big_dripleaf" ||
            isCoralFanName(n) ||
            endsWith(n, "_glazed_terracotta") ||
            isWallSignBlock(n);
@@ -333,6 +370,7 @@ bool StateInspector::hasNonCollidingPlacement(std::string_view id) noexcept {
            isSeaPickleBlock(n) ||
            isTurtleEggBlock(n) ||
            isFlowerBedBlock(n) ||
+           isTallPlantBlock(n) ||
            isCoralFanName(n) ||
            isFlowerOrSmallPlantName(n) ||
            n == "standing_banner" ||
@@ -515,6 +553,32 @@ std::string StateInspector::resolveSpecialItemBlockName(
     // Skulls & Mob Heads: placed on floor (16-angle) or horizontal wall (4-way), invalid on ceiling.
     if (n == "skull" || endsWith(n, "_skull") || endsWith(n, "_head")) {
         if (hitFace == Facing::Down) return {};
+        return "minecraft:" + n;
+    }
+
+    // Flowers, tall 2-block plants, copper golem statues, shelves, candles, slabs, stairs,
+    // trapdoors, fences, walls, bars, glass panes, dripleaves, ceiling flora, & non-full-cube blocks:
+    if (n == "small_dripleaf") return "minecraft:small_dripleaf_block";
+    if (isFlowerOrSmallPlantName(n) ||
+        isTallPlantBlock(n) ||
+        isCopperGolemStatue(n) ||
+        isShelfBlock(n) ||
+        isCandleBlock(n) ||
+        isSlabBlock(n) ||
+        isStairBlock(n) ||
+        isTrapdoorBlock(n) ||
+        isFenceGateBlock(n) ||
+        isFenceOrWallOrPane(n) ||
+        n == "spore_blossom" ||
+        n == "big_dripleaf" ||
+        n == "hanging_roots" ||
+        n == "pointed_dripstone" ||
+        n == "amethyst_cluster" ||
+        endsWith(n, "_amethyst_bud") ||
+        n == "vine" ||
+        n == "glow_lichen" ||
+        n == "sculk_vein" ||
+        n == "resin_clump") {
         return "minecraft:" + n;
     }
 
@@ -732,11 +796,15 @@ OrientationSummary StateInspector::decodeOrientation(
         if (cardVal >= 0 && n != "painting" && !isCoralFanName(n)) {
             out.facing = facingFromCardinalEnum(cardVal);
         } else if (n == "ladder" || isWallSignBlock(n) || n == "wall_banner" ||
-                   n == "tripwire_hook" || n == "painting" || isCoralFanName(n)) {
+                   n == "tripwire_hook" || n == "painting" || isCoralFanName(n) ||
+                   (isShelfBlock(n) && hitFace != Facing::Up && hitFace != Facing::Down)) {
             out.facing = hitFace;
+        } else if (isFlowerBedBlock(n)) {
+            out.facing = yawToPlayerLookHorizontal(playerYawDeg);
         } else {
             out.facing = oppositeFacing(yawToPlayerLookHorizontal(playerYawDeg));
         }
+        out.yawRadians = cardinalFacingToYawRad(out.facing);
         int upside = -1;
         if (findProp(props, "upside_down_bit", upside) || findProp(props, "minecraft:vertical_half", upside)) {
             out.topHalf = (upside != 0);
@@ -901,7 +969,8 @@ bool StateInspector::isFenceOrWallOrPane(std::string_view id) noexcept {
     if (isFenceGateBlock(n)) return false;
     return n == "fence" || endsWith(n, "_fence") ||
            n == "cobblestone_wall" || endsWith(n, "_wall") ||
-           n == "iron_bars" || n == "glass_pane" || endsWith(n, "_glass_pane");
+           n == "iron_bars" || n == "copper_bars" || endsWith(n, "_copper_bars") ||
+           n == "glass_pane" || endsWith(n, "_glass_pane");
 }
 
 std::vector<AABB> StateInspector::buildConnectedPostWorldBoxes(
@@ -915,7 +984,8 @@ std::vector<AABB> StateInspector::buildConnectedPostWorldBoxes(
     const Vec3 o = pos.originVec();
     const std::string n = lowerAscii(stripNamespace(blockIdentifier));
     const bool isWall = (n == "cobblestone_wall" || endsWith(n, "_wall"));
-    const bool isPane = (n == "iron_bars" || n == "glass_pane" || endsWith(n, "_glass_pane"));
+    const bool isPane = (n == "iron_bars" || n == "copper_bars" || endsWith(n, "_copper_bars") ||
+                         n == "glass_pane" || endsWith(n, "_glass_pane"));
 
     std::vector<AABB> boxes;
     if (isWall) {
@@ -1040,6 +1110,40 @@ std::vector<AABB> StateInspector::buildTurtleEggClusterWorldBoxes(
     };
 }
 
+std::vector<AABB> StateInspector::buildFlowerBedClusterWorldBoxes(
+    const BlockPos& pos,
+    int petalCount,
+    Facing cardinalFacing,
+    const Vec3& randomOffset) {
+
+    const Vec3 o = pos.originVec() + randomOffset;
+    const int c = std::clamp(petalCount, 1, 4);
+    constexpr float kBedH = 0.1875f; // 3/16 high in vanilla FlowerBedSelectionBox
+
+    float x0 = 0.0f, x1 = 1.0f;
+    float z0 = 0.0f, z1 = 1.0f;
+
+    if (c == 1) {
+        switch (cardinalFacing) {
+            case Facing::North: x0 = 0.0f; x1 = 0.5f; z0 = 0.5f; z1 = 1.0f; break;
+            case Facing::East:  x0 = 0.0f; x1 = 0.5f; z0 = 0.0f; z1 = 0.5f; break;
+            case Facing::South: x0 = 0.5f; x1 = 1.0f; z0 = 0.0f; z1 = 0.5f; break;
+            case Facing::West:
+            default:            x0 = 0.5f; x1 = 1.0f; z0 = 0.5f; z1 = 1.0f; break;
+        }
+    } else if (c == 2) {
+        switch (cardinalFacing) {
+            case Facing::North: x0 = 0.0f; x1 = 0.5f; z0 = 0.0f; z1 = 1.0f; break;
+            case Facing::East:  x0 = 0.0f; x1 = 1.0f; z0 = 0.0f; z1 = 0.5f; break;
+            case Facing::South: x0 = 0.5f; x1 = 1.0f; z0 = 0.0f; z1 = 1.0f; break;
+            case Facing::West:
+            default:            x0 = 0.0f; x1 = 1.0f; z0 = 0.5f; z1 = 1.0f; break;
+        }
+    }
+
+    return {AABB{o.x + x0, o.y, o.z + z0, o.x + x1, o.y + kBedH, o.z + z1}};
+}
+
 std::vector<OrientedBox> StateInspector::buildSpecialOrientedBoxes(
     const BlockPos& pos,
     std::string_view blockIdentifier,
@@ -1047,6 +1151,27 @@ std::vector<OrientedBox> StateInspector::buildSpecialOrientedBoxes(
 
     const Vec3 o = pos.originVec();
     const std::string n = lowerAscii(stripNamespace(blockIdentifier));
+
+    // 0. Copper Golem Statue (all 8 oxidation + waxed variants):
+    //    True 3D directional Copper Golem silhouette facing the player (-W direction)!
+    if (isCopperGolemStatue(n)) {
+        const float yaw = cardinalFacingToYawRad(orient.facing);
+        return {
+            // Left & right copper legs (0..4 px)
+            OrientedBox::fromCellYaw(o, {-2.0f / 16.0f, 2.0f / 16.0f, 0.0f}, {1.6f / 16.0f, 2.0f / 16.0f, 2.0f / 16.0f}, yaw),
+            OrientedBox::fromCellYaw(o, { 2.0f / 16.0f, 2.0f / 16.0f, 0.0f}, {1.6f / 16.0f, 2.0f / 16.0f, 2.0f / 16.0f}, yaw),
+            // Copper torso (4..9 px)
+            OrientedBox::fromCellYaw(o, {0.0f, 6.5f / 16.0f, 0.0f}, {4.0f / 16.0f, 2.5f / 16.0f, 2.5f / 16.0f}, yaw),
+            // Left & right arms (3..8.5 px)
+            OrientedBox::fromCellYaw(o, {-5.0f / 16.0f, 5.75f / 16.0f, 0.0f}, {1.0f / 16.0f, 2.75f / 16.0f, 1.5f / 16.0f}, yaw),
+            OrientedBox::fromCellYaw(o, { 5.0f / 16.0f, 5.75f / 16.0f, 0.0f}, {1.0f / 16.0f, 2.75f / 16.0f, 1.5f / 16.0f}, yaw),
+            // Head (9..14 px) + iconic front nose protruding toward player (-Z)!
+            OrientedBox::fromCellYaw(o, {0.0f, 11.5f / 16.0f, 0.0f}, {4.0f / 16.0f, 2.5f / 16.0f, 3.5f / 16.0f}, yaw),
+            OrientedBox::fromCellYaw(o, {0.0f, 10.25f / 16.0f, -4.4f / 16.0f}, {1.0f / 16.0f, 1.25f / 16.0f, 0.9f / 16.0f}, yaw),
+            // Top lightning-rod antenna (14..16 px)
+            OrientedBox::fromCellYaw(o, {0.0f, 15.0f / 16.0f, 0.0f}, {1.0f / 16.0f, 1.0f / 16.0f, 1.0f / 16.0f}, yaw)
+        };
+    }
 
     // 1. Exact 16-Angle Standing Sign: thin wooden post [0..14/24] + full 1.0 wide board [14/24..26/24]
     if (isStandingSignBlock(n)) {
@@ -1163,11 +1288,12 @@ bool StateInspector::isNonSolidSupportBlock(std::string_view id) noexcept {
         return true;
     }
     return isFlowerOrSmallPlantName(n) ||
+           isTallPlantBlock(n) ||
            isCoralFanName(n) ||
            isSeaPickleBlock(n) ||
            isTurtleEggBlock(n) ||
            isFlowerBedBlock(n) ||
-           n == "large_fern" || n == "vine" || n == "glow_lichen" ||
+           n == "vine" || n == "glow_lichen" ||
            n == "sculk_vein" || n == "resin_clump" ||
            n == "snow_layer" || n == "carpet" || endsWith(n, "_carpet") ||
            n == "torch" || endsWith(n, "_torch") || n == "ladder" ||
@@ -1252,6 +1378,9 @@ bool StateInspector::validateBlockSupport(
 
     if (n == "spore_blossom" || n == "hanging_roots" || n == "cave_vines") {
         return aboveSolid;
+    }
+    if (n == "pale_hanging_moss") {
+        return aboveSolid || above == "pale_hanging_moss";
     }
 
     if (n == "tripwire_hook" || isWallSignBlock(n) || n == "wall_banner") {
@@ -1364,7 +1493,36 @@ std::vector<AABB> StateInspector::buildFallbackBlockBoxes(
     }
 
     if (isFlowerBedBlock(n)) {
-        return {AABB{o.x, o.y, o.z, o.x + 1.0f, o.y + 0.1875f, o.z + 1.0f}};
+        return buildFlowerBedClusterWorldBoxes(pos, 1, orient.facing);
+    }
+
+    if (isCopperGolemStatue(n)) {
+        // Exact bounds disassembled in CopperGolemStatueBlock (0x100df6e4): {3/16, 0, 3/16}..{13/16, 14/16, 13/16}
+        return {AABB{o.x + 0.1875f, o.y, o.z + 0.1875f, o.x + 0.8125f, o.y + 0.875f, o.z + 0.8125f}};
+    }
+
+    if (isShelfBlock(n)) {
+        // Exact 3/16 thin horizontal wall shelf disassembled in ShelfBlock::getOutline (0x10790db4)
+        constexpr float d = 0.1875f;
+        switch (orient.facing) {
+            case Facing::North: return {AABB{o.x, o.y, o.z + 1.0f - d, o.x + 1.0f, o.y + 1.0f, o.z + 1.0f}};
+            case Facing::South: return {AABB{o.x, o.y, o.z,            o.x + 1.0f, o.y + 1.0f, o.z + d}};
+            case Facing::West:  return {AABB{o.x + 1.0f - d, o.y, o.z, o.x + 1.0f, o.y + 1.0f, o.z + 1.0f}};
+            case Facing::East:
+            default:            return {AABB{o.x,            o.y, o.z, o.x + d,    o.y + 1.0f, o.z + 1.0f}};
+        }
+    }
+
+    if (isTallPlantBlock(n)) {
+        return {AABB{o.x + 0.1875f, o.y, o.z + 0.1875f, o.x + 0.8125f, o.y + 2.0f, o.z + 0.8125f}};
+    }
+
+    if (n == "big_dripleaf") {
+        return {AABB{o.x, o.y + 0.6875f, o.z, o.x + 1.0f, o.y + 0.9375f, o.z + 1.0f}};
+    }
+
+    if (n == "chorus_flower" || n == "chorus_plant") {
+        return {AABB{o.x + 0.125f, o.y + 0.125f, o.z + 0.125f, o.x + 0.875f, o.y + 0.875f, o.z + 0.875f}};
     }
 
     if (n == "conduit") {
@@ -1744,8 +1902,17 @@ std::vector<AABB> StateInspector::buildFallbackBlockBoxes(
         return {AABB{o.x + 0.125f, o.y, o.z + 0.125f, o.x + 0.875f, o.y + 0.25f, o.z + 0.875f}};
     }
 
+    if (n == "cactus_flower") {
+        return {AABB{o.x + 0.125f, o.y, o.z + 0.125f, o.x + 0.875f, o.y + 0.75f, o.z + 0.875f}};
+    }
+
+    if (isPureFlowerStemName(n)) {
+        // Exact vanilla FlowerBlock visual bounds: centered slender 6x10x6 px stem + blossom!
+        return {AABB{o.x + 0.3125f, o.y, o.z + 0.3125f, o.x + 0.6875f, o.y + 0.625f, o.z + 0.6875f}};
+    }
+
     if (isFlowerOrSmallPlantName(n)) {
-        return {AABB{o.x + 0.1875f, o.y, o.z + 0.1875f, o.x + 0.8125f, o.y + 0.75f, o.z + 0.8125f}};
+        return {AABB{o.x + 0.125f, o.y, o.z + 0.125f, o.x + 0.875f, o.y + 0.8125f, o.z + 0.875f}};
     }
 
     return {AABB::unitAt(pos)};

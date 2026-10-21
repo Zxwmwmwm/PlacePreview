@@ -45,6 +45,9 @@ public:
     [[nodiscard]] static bool isSeaPickleBlock(std::string_view id) noexcept;
     [[nodiscard]] static bool isTurtleEggBlock(std::string_view id) noexcept;
     [[nodiscard]] static bool isFlowerBedBlock(std::string_view id) noexcept;
+    [[nodiscard]] static bool isTallPlantBlock(std::string_view id) noexcept;
+    [[nodiscard]] static bool isCopperGolemStatue(std::string_view id) noexcept;
+    [[nodiscard]] static bool isShelfBlock(std::string_view id) noexcept;
     [[nodiscard]] static bool isLiquidOrAirBlock(std::string_view id) noexcept;
     [[nodiscard]] static bool isPillarBlock(std::string_view id) noexcept;
     [[nodiscard]] static bool isSixWayBlock(std::string_view id) noexcept;
@@ -55,9 +58,6 @@ public:
     [[nodiscard]] static bool isNonSolidSupportBlock(std::string_view id) noexcept;
     [[nodiscard]] static bool hasNonCollidingPlacement(std::string_view id) noexcept;
 
-    // Maps item OR block identifiers cleanly to the exact placed block identifier for `hitFace`
-    // (handles face-dependent swaps such as sign <-> wall_sign, standing_banner <-> wall_banner,
-    // item_frame -> frame, glow_item_frame -> glow_frame, painting, armor_stand, sea_pickle, etc.).
     [[nodiscard]] static std::string resolveSpecialItemBlockName(
         std::string_view itemIdentifier,
         Facing hitFace) noexcept;
@@ -112,6 +112,12 @@ public:
     [[nodiscard]] static std::vector<AABB> buildTurtleEggClusterWorldBoxes(
         const BlockPos& pos,
         int eggCount);
+
+    [[nodiscard]] static std::vector<AABB> buildFlowerBedClusterWorldBoxes(
+        const BlockPos& pos,
+        int petalCount,
+        Facing cardinalFacing = Facing::North,
+        const Vec3& randomOffset = {0.0f, 0.0f, 0.0f});
 
     [[nodiscard]] static std::vector<OrientedBox> buildSpecialOrientedBoxes(
         const BlockPos& pos,

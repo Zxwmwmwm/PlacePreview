@@ -8,27 +8,18 @@
 namespace placepreview::sig {
 
 // ============================================================================
-// Verified RVAs & +0x10 instruction words for Minecraft Bedrock 1.26.52.03
+// Verified RVAs & instruction words for Minecraft Bedrock 1.26.52.03
 // arm64-v8a (libminecraftpe.so).
-//
-// Instant < 0.2 ms resolution strategy (ZERO UI main-thread signature scans):
-//   1. Resolve module base via dl_iterate_phdr + instruction word guard at
-//      DebugRenderer_renderEnd + 0x10 (fallback: LevelRendererPlayer::vtable[20]).
-//   2. Compute every target function directly via moduleBase + RVA and verify
-//      its instruction word before installing any detour or reading globals.
-//   3. If running on a future game build where RVAs shifted, wildcard signature
-//      scanning runs ONLY on a background worker thread so Mod::enable() NEVER
-//      stalls Android's UI main thread (preventing ANRs).
 // ============================================================================
 namespace rva {
-inline constexpr uintptr_t LRP_setupFog                 = 0x0b29b70c;
-inline constexpr uint32_t  LRP_setupFog_Word10          = 0xa9085ff8u;
+inline constexpr uintptr_t LRP_setupFog                  = 0x0b29b70c;
+inline constexpr uint32_t  LRP_setupFog_Word10           = 0xa9085ff8u;
 
-inline constexpr uintptr_t DebugRenderer_renderEnd      = 0x0b25de34;
-inline constexpr uint32_t  DebugRenderer_renderEnd_W10  = 0xa90a57f6u;
+inline constexpr uintptr_t DebugRenderer_renderEnd       = 0x0b25de34;
+inline constexpr uint32_t  DebugRenderer_renderEnd_W10   = 0xa90a57f6u;
 
-inline constexpr uintptr_t LevelChunk_getBlock          = 0x10360594;
-inline constexpr uint32_t  LevelChunk_getBlock_W10      = 0xa950a808u;
+inline constexpr uintptr_t LevelChunk_getBlock           = 0x10360594;
+inline constexpr uint32_t  LevelChunk_getBlock_W10       = 0xa950a808u;
 
 inline constexpr uintptr_t Actor_getDimensionBlockSource = 0x0f560600;
 inline constexpr uint32_t  Actor_getDimBlockSource_W10   = 0xf940e400u;
@@ -39,14 +30,27 @@ inline constexpr uint32_t  Player_isCreative_W10         = 0xf940080bu;
 inline constexpr uintptr_t Entity_getPlayerGameType      = 0x0f9ba104;
 inline constexpr uint32_t  Entity_getPlayerGameType_W10  = 0xcb0b0108u;
 
-// Verified BlockTypeRegistry singleton getter & global instance (disassembled @ 0x103e33a8):
-//   103e33a8: b00187a0  adrp x0, 0x134d8000
-//   103e33ac: 9110e000  add  x0, x0, #0x438
-//   103e33b0: d65f03c0  ret
+// Verified BlockTypeRegistry pointer slot (disassembled @ 0x103e33a8 & 0x103e3548):
 inline constexpr uintptr_t BlockTypeRegistry_getter      = 0x103e33a8;
 inline constexpr uint32_t  BlockTypeRegistry_getter_W0   = 0xb00187a0u;
 inline constexpr uint32_t  BlockTypeRegistry_getter_W4   = 0x9110e000u;
-inline constexpr uintptr_t BlockTypeRegistry_global      = 0x134d8438;
+inline constexpr uintptr_t BlockTypeRegistry_ptr         = 0x134d8428; // BlockTypeRegistry* slot
+
+// Verified per-cell RandomOffset & FlowerBedSelectionBox native helpers:
+inline constexpr uintptr_t Block_getRandomOffset         = 0x101faf08; // Vec3 (*)(const void* block, const BlockPos* pos)
+inline constexpr uint32_t  Block_getRandomOffset_W10     = 0x968fb8dau;
+
+inline constexpr uintptr_t FlowerBed_tryGetComp          = 0x0b2a21c4; // const void* (*)(const void* block)
+inline constexpr uint32_t  FlowerBed_tryGetComp_W10      = 0x910043fdu;
+
+inline constexpr uintptr_t FlowerBed_getOutline          = 0x10548ba4; // AABB (*)(const void* comp, const void* block, const BlockPos* pos)
+inline constexpr uint32_t  FlowerBed_getOutline_W10      = 0xa9094ff4u;
+
+inline constexpr uintptr_t BlockPlanterComp_getId        = 0x0fc7634c; // const void* (*)()
+inline constexpr uint32_t  BlockPlanterComp_getId_W10    = 0x912de108u;
+
+inline constexpr uintptr_t ItemStack_getComp             = 0x0ffa7068; // const void* (*)(const void* stack, const void* id)
+inline constexpr uint32_t  ItemStack_getComp_W10         = 0xb4000268u;
 } // namespace rva
 
 // Position-independent body patterns starting at +0x10 with PC-relative branches masked.
@@ -81,7 +85,7 @@ inline constexpr std::size_t LRP_SetupFogVtableSlot     = 20;
 inline constexpr uintptr_t DebugRenderer_ActiveFlag     = 0x08;   // uint8_t
 inline constexpr uintptr_t DebugRenderer_EnabledByte    = 0x01db; // uint8_t
 inline constexpr uintptr_t DebugRenderer_LineVec        = 0x50;   // PackedVertex*[3] (LineList, mode=4)
-inline constexpr uintptr_t DebugRenderer_TriVec        = 0x68;    // PackedVertex*[3] (TriangleList, mode=2)
+inline constexpr uintptr_t DebugRenderer_TriVec         = 0x68;   // PackedVertex*[3] (TriangleList, mode=2)
 inline constexpr uintptr_t LevelRenderer_DebugRenderer  = 0x2a8;  // LevelRenderer + 0x2a8 == DebugRenderer*
 inline constexpr uintptr_t LevelRenderer_LRPPtr         = 0x420;  // LevelRendererPlayer*
 inline constexpr uintptr_t RenderParams_ScreenContext   = 0x20;   // ScreenContext*
@@ -116,13 +120,14 @@ inline constexpr uintptr_t Actor_AABBCompPtr            = 0x210;  // AABBShapeCo
 inline constexpr uintptr_t Actor_RotCompPtr             = 0x218;  // ActorRotationComponent* (pitch, yaw)
 inline constexpr uintptr_t Actor_VtGetCarriedItem       = 0x270;  // slot 78: const ItemStack*
 
-// ItemStackBase & Item fields (verified via 0x0ff81e94 / 0x0ff88c20 getters)
+// ItemStackBase & Item fields
 inline constexpr uintptr_t ItemStack_ItemWeakPtr        = 0x08;   // WeakPtr<Item> -> Item**
 inline constexpr uintptr_t ItemStack_BlockPtr           = 0x18;   // const Block* mBlock
 inline constexpr uintptr_t ItemStack_AuxValue           = 0x20;   // int16_t
 inline constexpr uintptr_t ItemStack_Count              = 0x22;   // uint8_t
 inline constexpr uintptr_t Item_RawNameId               = 0xa8;   // HashedString (+0x08 std::string at +0xb0)
 inline constexpr uintptr_t Item_FullName                = 0xe8;   // HashedString (+0x08 std::string at +0xf0)
+inline constexpr uintptr_t Item_BlockTypePtr            = 0x138;  // const BlockType* mBlockType (direct non-null BlockType* on block items!)
 
 // BlockSource & LevelChunk fields
 inline constexpr uintptr_t BlockSource_MaxHeight        = 0x40;   // int16_t (exclusive ceiling, e.g. 320)
@@ -137,14 +142,16 @@ inline constexpr uintptr_t Block_Data                   = 0x128;  // uint16_t mD
 inline constexpr uintptr_t BlockType_RawNameStr         = 0x90;   // std::string (e.g. "oak_stairs")
 inline constexpr uintptr_t BlockType_FullNameStr        = 0xd0;   // std::string (e.g. "minecraft:oak_stairs")
 inline constexpr uintptr_t BlockType_DefaultVisualShape = 0x188;  // AABB mVisualShape [0..1]^3
-inline constexpr uintptr_t BlockType_StatesTree         = 0x1b0;  // BlockStateInstance RB-tree
+inline constexpr uintptr_t BlockType_StatesMap          = 0x1a8;  // std::map<uint64_t, BlockStateInstance> (__begin_node_ @ +0x1a8, root @ +0x1b0, count @ +0x1b8)
+inline constexpr uintptr_t BlockType_PermutationsVec    = 0x1e8;  // std::vector<std::unique_ptr<Block>> mBlockPermutations
 inline constexpr uintptr_t BlockType_DefaultStatePtr    = 0x200;  // const Block* mDefaultState
+inline constexpr uintptr_t BlockType_TraitStatesVec     = 0x350;  // std::vector<std::shared_ptr<BlockTrait::IState>> (1.21-1.26 trait states!)
 
 inline constexpr uintptr_t BlockType_VtGetOutline       = 0x40;   // slot 8: const AABB& getOutline(const Block&, const IConstBlockSource&, const BlockPos&, AABB&)
 inline constexpr uintptr_t BlockType_VtGetVisualShape   = 0x50;   // slot 10: const AABB& getVisualShape(const Block&, AABB&)
 inline constexpr uintptr_t BlockType_VtGetPlacementBlock= 0x278;  // slot 79: const Block& getPlacementBlock(const Actor&, const BlockPos&, FacingID, const Vec3&, int)
 
-// Read-only BlockTypeRegistry std::map<HashedString, std::shared_ptr<BlockType>> offsets (0x103e6394..0x103e64bc)
+// Read-only BlockTypeRegistry std::map<HashedString, std::shared_ptr<BlockType>> offsets
 inline constexpr uintptr_t Registry_MapRootPtr          = 0x08;   // __tree_node_base* root
 inline constexpr uintptr_t Registry_MapSize             = 0x10;   // size_t nodeCount
 inline constexpr uintptr_t RegistryNode_Left            = 0x00;   // const void*
@@ -160,11 +167,16 @@ inline constexpr uintptr_t untagUserAddr(uintptr_t addr) noexcept {
     return addr & 0x00FFFFFFFFFFFFFFull;
 }
 
+template <typename T>
+inline const T* untagPtr(const T* ptr) noexcept {
+    return reinterpret_cast<const T*>(untagUserAddr(reinterpret_cast<uintptr_t>(ptr)));
+}
+
 inline bool isValidUserAddress(const void* ptr, std::size_t alignReq = 1) noexcept {
     if (!ptr) return false;
     const uintptr_t raw = reinterpret_cast<uintptr_t>(ptr);
     const uintptr_t untagged = untagUserAddr(raw);
-    if (untagged < 0x10000ull || untagged > 0x0000FFFFFFFFFFFFull) return false;
+    if (untagged < 0x10000ull || untagged > 0x000FFFFFFFFFFFFFull) return false;
     if (alignReq > 1 && (untagged & (alignReq - 1u)) != 0) return false;
     return true;
 }
@@ -172,7 +184,7 @@ inline bool isValidUserAddress(const void* ptr, std::size_t alignReq = 1) noexce
 // Safe zero-copy libc++ std::string reader (handles SSO short & heap long layouts)
 inline std::string_view readLibcxxStringView(const void* strAddr) noexcept {
     if (!isValidUserAddress(strAddr, alignof(void*))) return {};
-    const auto* bytes = static_cast<const uint8_t*>(strAddr);
+    const auto* bytes = untagPtr(static_cast<const uint8_t*>(strAddr));
     if ((bytes[0] & 1u) == 0u) {
         const std::size_t len = static_cast<std::size_t>(bytes[0] >> 1u);
         if (len == 0 || len > 22) return {};
@@ -182,6 +194,7 @@ inline std::string_view readLibcxxStringView(const void* strAddr) noexcept {
     const char* dataPtr = nullptr;
     std::memcpy(&len, bytes + 8, sizeof(std::size_t));
     std::memcpy(&dataPtr, bytes + 16, sizeof(const char*));
+    dataPtr = untagPtr(dataPtr);
     if (len == 0 || len > 256 || !isValidUserAddress(dataPtr, 1)) return {};
     return std::string_view(dataPtr, len);
 }

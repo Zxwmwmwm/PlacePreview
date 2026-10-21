@@ -529,9 +529,29 @@ PlacementPreviewState PlacementResolver::resolve(
         }
     }
 
+    const bool isTallTwoBlockPlant = StateInspector::isTallPlantBlock(effectiveId);
+    if (isTallTwoBlockPlant) {
+        const BlockPos upperPos = placePos.offset(0, 1, 0);
+        const BlockPos belowPos = placePos.offset(0, -1, 0);
+        if (upperPos.y > world.maxBuildHeight() || !world.isReplaceableBlock(upperPos)) {
+            return invalid;
+        }
+        if (world.isAirBlock(belowPos) || world.isReplaceableBlock(belowPos)) {
+            return invalid;
+        }
+        if (worldBoxes.size() == 1 && worldBoxes[0].max.y < static_cast<float>(placePos.y) + 1.95f) {
+            worldBoxes[0].max.y = static_cast<float>(placePos.y) + 2.0f;
+        }
+    }
+
     PlacementPreviewState out{};
     out.valid = true;
     out.primaryPos = placePos;
+    out.hasSecondaryCell = isTallTwoBlockPlant;
+    if (isTallTwoBlockPlant) {
+        out.secondaryPos = placePos.offset(0, 1, 0);
+        out.isMultiBlock = true;
+    }
     out.hitFace = resolvedFace;
     out.subClick = subClick;
     out.orientationKind = orient.kind;

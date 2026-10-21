@@ -1,6 +1,7 @@
 {
   global:
     PLGetModRegistration;
+    JNI_OnLoad;
   local:
     *;
 };

@@ -640,6 +640,140 @@ void testSchemaV2PresetsRenderStylesMaterialAdaptiveAndOutlineOpacity() {
     mgr.resetDefaults();
 }
 
+void testFlowersCopperGolemStatuesShelvesAndLiveColorChannels() {
+    FakeWorld world;
+    for (int x = -2; x <= 4; ++x) {
+        for (int z = -2; z <= 4; ++z) {
+            world.setBlock(x, 63, z, "minecraft:grass_block");
+        }
+    }
+    world.setBlock(4, 64, 1, "minecraft:stone"); // wall for shelf & bars
+
+    ModConfig cfg{};
+
+    auto resolveFloor = [&](std::string itemId, std::string directBlockId, float yawDeg = 0.0f) {
+        PlayerContextInput ctx{};
+        ctx.inWorld = true;
+        ctx.yawDeg = yawDeg;
+        ctx.mainhand = HeldItemInput{true, 64, 0, std::move(itemId), std::move(directBlockId), 0};
+        ctx.raycast.hasBlockHit = true;
+        ctx.raycast.blockPos = {1, 63, 1};
+        ctx.raycast.hitFace = Facing::Up;
+        ctx.raycast.hitWorldPos = {1.5f, 64.0f, 1.5f};
+        return PlacementResolver::resolve(ctx, world, cfg);
+    };
+
+    // 1. Single flowers (even when ItemStack::mBlock is empty on held items!) produce slender stem+blossom boxes:
+    for (const char* flower : {
+             "minecraft:poppy",
+             "minecraft:dandelion",
+             "minecraft:golden_dandelion",
+             "minecraft:open_eyeblossom",
+             "minecraft:torchflower"}) {
+        const auto res = resolveFloor(flower, "");
+        assert(res.valid && res.worldBoxes.size() == 1);
+        assert(approx(res.worldBoxes[0].sizeX(), 0.375f));
+        assert(approx(res.worldBoxes[0].sizeY(), 0.625f));
+        assert(approx(res.worldBoxes[0].sizeZ(), 0.375f));
+    }
+
+    // 2. Flowerbeds (pink_petals, wildflowers, leaf_litter) scale exact quadrant -> half -> full bed across 1..4 count:
+    {
+        const auto bed1 = resolveFloor("minecraft:pink_petals", "", 180.0f); // North look -> 1 quadrant (0.5 x 0.1875 x 0.5)
+        assert(bed1.valid && bed1.worldBoxes.size() == 1);
+        assert(approx(bed1.worldBoxes[0].sizeX(), 0.5f));
+        assert(approx(bed1.worldBoxes[0].sizeY(), 0.1875f));
+        assert(approx(bed1.worldBoxes[0].sizeZ(), 0.5f));
+
+        const auto bed2 = StateInspector::buildFlowerBedClusterWorldBoxes({1, 64, 1}, 2, Facing::North);
+        assert(approx(bed2[0].sizeX(), 0.5f) && approx(bed2[0].sizeZ(), 1.0f) && approx(bed2[0].sizeY(), 0.1875f));
+
+        const auto bed4 = StateInspector::buildFlowerBedClusterWorldBoxes({1, 64, 1}, 4, Facing::North);
+        assert(approx(bed4[0].sizeX(), 1.0f) && approx(bed4[0].sizeZ(), 1.0f) && approx(bed4[0].sizeY(), 0.1875f));
+    }
+
+    // 3. Tall 2-block flowers/plants validate upper-cell clearance AND emit full 2-block height:
+    for (const char* tall : {
+             "minecraft:sunflower",
+             "minecraft:lilac",
+             "minecraft:rose_bush",
+             "minecraft:peony",
+             "minecraft:pitcher_plant",
+             "minecraft:tall_grass",
+             "minecraft:large_fern"}) {
+        const auto ok = resolveFloor(tall, "");
+        assert(ok.valid && ok.isMultiBlock && ok.hasSecondaryCell);
+        assert(approx(ok.worldBoxes[0].sizeY(), 2.0f));
+    }
+    world.setBlock(1, 65, 1, "minecraft:stone"); // low ceiling blocks 2-block plant!
+    assert(!resolveFloor("minecraft:sunflower", "").valid);
+    world.setBlock(1, 65, 1, "minecraft:air");
+
+    // 4. All Copper Golem Statue variants build a directional 8-part 3D OBB golem model with oxidation palette tints:
+    for (const char* statue : {
+             "minecraft:copper_golem_statue",
+             "minecraft:exposed_copper_golem_statue",
+             "minecraft:weathered_copper_golem_statue",
+             "minecraft:oxidized_copper_golem_statue",
+             "minecraft:waxed_copper_golem_statue",
+             "minecraft:waxed_oxidized_copper_golem_statue"}) {
+        const auto southStatue = resolveFloor(statue, "", 180.0f);
+        const auto eastStatue = resolveFloor(statue, "", 90.0f);
+        assert(southStatue.valid && southStatue.orientedBoxes.size() == 8);
+        assert(eastStatue.valid && eastStatue.orientedBoxes.size() == 8);
+        // Nose part (index 6) rotates cleanly by 90 degrees when player rotates!
+        assert(std::fabs(southStatue.orientedBoxes[6].center.x - eastStatue.orientedBoxes[6].center.x) > 0.20f);
+    }
+    assert(MaterialPalette::colorForBlock("minecraft:copper_golem_statue").r >
+           MaterialPalette::colorForBlock("minecraft:oxidized_copper_golem_statue").r);
+    assert(MaterialPalette::colorForBlock("minecraft:oxidized_copper_chest").g >
+           MaterialPalette::colorForBlock("minecraft:copper_chest").g);
+
+    // 5. Shelves (3/16 wall depth) & Copper Bars (neighbor-connecting pane):
+    {
+        PlayerContextInput ctx{};
+        ctx.inWorld = true;
+        ctx.mainhand = HeldItemInput{true, 64, 0, "minecraft:pale_oak_shelf", "", 0};
+        ctx.raycast.hasBlockHit = true;
+        ctx.raycast.blockPos = {4, 64, 1};
+        ctx.raycast.hitFace = Facing::West;
+        ctx.raycast.hitWorldPos = {4.0f, 64.5f, 1.5f};
+        const auto shelf = PlacementResolver::resolve(ctx, world, cfg);
+        assert(shelf.valid && shelf.worldBoxes.size() == 1);
+        assert(approx(shelf.worldBoxes[0].sizeX(), 0.1875f));
+        assert(approx(shelf.worldBoxes[0].max.x, 4.0f));
+
+        ctx.mainhand = HeldItemInput{true, 64, 0, "minecraft:oxidized_copper_bars", "", 0};
+        const auto bars = PlacementResolver::resolve(ctx, world, cfg);
+        assert(bars.valid && bars.worldBoxes.size() >= 2);
+    }
+
+    // 6. Live Schema V2 R/G/B/A sliders & Color Swatch hex bidirectional synchronization + persistence:
+    const auto tmpDir = std::filesystem::temp_directory_path() / "placepreview_rgba_sync_test";
+    std::error_code ec;
+    std::filesystem::remove_all(tmpDir, ec);
+    auto& mgr = ConfigManager::instance();
+    mgr.init(tmpDir);
+    mgr.resetDefaults();
+
+    mgr.applyKeyValue("accentRed", "255");
+    mgr.applyKeyValue("accentGreen", "64");
+    mgr.applyKeyValue("accentBlue", "192");
+    mgr.applyKeyValue("accentAlpha", "200");
+    assert(mgr.snapshot().previewColorHex() == "#C8FF40C0");
+
+    mgr.applyKeyValue("previewColor", "#8012AB34");
+    assert(mgr.snapshot().accentAlpha == 128);
+    assert(mgr.snapshot().accentRed == 18);
+    assert(mgr.snapshot().accentGreen == 171);
+    assert(mgr.snapshot().accentBlue == 52);
+
+    mgr.init(tmpDir); // reload from disk
+    assert(mgr.snapshot().previewColorHex() == "#8012AB34");
+    assert(mgr.snapshot().accentRed == 18 && mgr.snapshot().accentGreen == 171 && mgr.snapshot().accentBlue == 52);
+    std::filesystem::remove_all(tmpDir, ec);
+}
+
 } // namespace
 
 int main() {
@@ -650,6 +784,7 @@ int main() {
     testNonPlaceableItemsNeverPreview();
     testSlabMergeAndDebugRendererSwapPass();
     testSchemaV2PresetsRenderStylesMaterialAdaptiveAndOutlineOpacity();
+    testFlowersCopperGolemStatuesShelvesAndLiveColorChannels();
     std::cout << "All Place Preview unit & sanitizer tests passed!\n";
     return 0;
 }

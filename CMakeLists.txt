@@ -39,6 +39,7 @@ if(ANDROID)
     target_compile_definitions(PlacePreviewCore PUBLIC FMT_HEADER_ONLY=1)
 
     add_library(PlacePreview SHARED
+        src/ColorPreviewOverlay.cpp
         src/ModMenuUi.cpp
         src/main.cpp
     )
