@@ -35,8 +35,11 @@ inline constexpr uint32_t  LevelChunk_getBlock_W10      = 0xa950a808u;
 inline constexpr uintptr_t Actor_getDimensionBlockSource = 0x0f560600;
 inline constexpr uint32_t  Actor_getDimBlockSource_W10   = 0xf940e400u;
 
-inline constexpr uintptr_t Actor_isSpectator            = 0x0f58e6c8;
-inline constexpr uint32_t  Actor_isSpectator_W10        = 0xf940080bu;
+inline constexpr uintptr_t Player_isCreative             = 0x0f58e6c8;
+inline constexpr uint32_t  Player_isCreative_W10         = 0xf940080bu;
+
+inline constexpr uintptr_t Entity_getPlayerGameType      = 0x0f9ba104;
+inline constexpr uint32_t  Entity_getPlayerGameType_W10  = 0xcb0b0108u;
 } // namespace rva
 
 // Position-independent body patterns starting at +0x10 with PC-relative branches masked.
@@ -53,8 +56,11 @@ inline constexpr const char* LevelChunk_getBlock_Body10 =
 inline constexpr const char* Actor_getDimBlockSource_Body10 =
     "00 E4 40 F9 1F 00 00 F1 ? ? ? 54 08 00 40 F9";
 
-inline constexpr const char* Actor_isSpectator_Body10 =
+inline constexpr const char* Player_isCreative_Body10 =
     "0B 08 40 F9 7F 01 00 F1 ? ? ? 54 68 01 40 F9";
+
+inline constexpr const char* Entity_getPlayerGameType_Body10 =
+    "08 01 0B CB 08 FD 43 D3 08 05 00 51 0C 01 0A 8A";
 } // namespace pattern
 
 // ============================================================================
@@ -64,12 +70,16 @@ namespace off {
 inline constexpr const char* LRP_RttiName               = "19LevelRendererPlayer";
 inline constexpr std::size_t LRP_SetupFogVtableSlot     = 20;
 
-// DebugRenderer layout & LevelRenderer embedding
-inline constexpr uintptr_t DebugRenderer_ActiveFlag     = 0x08;  // uint8_t
-inline constexpr uintptr_t DebugRenderer_LineVec        = 0x50;  // PackedVertex*[3] (LineList, mode=4)
-inline constexpr uintptr_t DebugRenderer_TriVec         = 0x68;  // PackedVertex*[3] (TriangleList, mode=2)
-inline constexpr uintptr_t LevelRenderer_DebugRenderer  = 0x2a8; // LevelRenderer + 0x2a8 == DebugRenderer*
-inline constexpr uintptr_t LevelRenderer_LRPPtr         = 0x420; // LevelRendererPlayer*
+// DebugRenderer layout & LevelRenderer / ScreenContext camera embedding
+inline constexpr uintptr_t DebugRenderer_ActiveFlag     = 0x08;   // uint8_t
+inline constexpr uintptr_t DebugRenderer_EnabledByte    = 0x01db; // uint8_t
+inline constexpr uintptr_t DebugRenderer_LineVec        = 0x50;   // PackedVertex*[3] (LineList, mode=4)
+inline constexpr uintptr_t DebugRenderer_TriVec         = 0x68;   // PackedVertex*[3] (TriangleList, mode=2)
+inline constexpr uintptr_t LevelRenderer_DebugRenderer  = 0x2a8;  // LevelRenderer + 0x2a8 == DebugRenderer*
+inline constexpr uintptr_t LevelRenderer_LRPPtr         = 0x420;  // LevelRendererPlayer*
+inline constexpr uintptr_t RenderParams_ScreenContext   = 0x20;   // ScreenContext*
+inline constexpr uintptr_t ScreenContext_CameraData     = 0xa8;   // CameraData*
+inline constexpr uintptr_t CameraData_WorldPos          = 0x28;   // Vec3 (interpolated world camera eye pos)
 
 // LevelRendererPlayer fields
 inline constexpr uintptr_t LRP_ClientInstancePtr        = 0x1100; // ClientInstance*
@@ -80,6 +90,7 @@ inline constexpr uintptr_t ClientInstance_VtGetCamActor = 0x138;  // slot 39: Ac
 inline constexpr uintptr_t ClientInstance_VtGetRegion   = 0x150;  // slot 42: BlockSource* getRegion()
 
 // Level vtable offsets (byte offsets)
+inline constexpr uintptr_t Level_VtGetDefaultGameType   = 0x468;  // slot 141: GameType getDefaultGameType()
 inline constexpr uintptr_t Level_VtGetHitResult         = 0xa80;  // slot 336: HitResult* getHitResult()
 
 // HitResult fields
@@ -92,18 +103,20 @@ inline constexpr uintptr_t HitResult_LiquidFacing       = 0x69;   // uint8_t
 inline constexpr uintptr_t HitResult_LiquidPos          = 0x6c;   // int32_t[3]
 
 // Actor fields & vtable offsets
+inline constexpr uintptr_t Actor_EntityContext          = 0x08;   // EntityContext embedded field
+inline constexpr uintptr_t Actor_LevelPtr               = 0x1d0;  // Level*
 inline constexpr uintptr_t Actor_AABBCompPtr            = 0x210;  // AABBShapeComponent* (float[6] min/max)
 inline constexpr uintptr_t Actor_RotCompPtr             = 0x218;  // ActorRotationComponent* (pitch, yaw)
 inline constexpr uintptr_t Actor_VtGetCarriedItem       = 0x270;  // slot 78: const ItemStack*
 inline constexpr uintptr_t Actor_VtGetOffhandSlot       = 0x280;  // slot 80: const ItemStack*
 
-// ItemStackBase & Item fields
+// ItemStackBase & Item fields (verified via 0x0ff81e94 / 0x0ff88c20 getters)
 inline constexpr uintptr_t ItemStack_ItemWeakPtr        = 0x08;   // WeakPtr<Item> -> Item**
 inline constexpr uintptr_t ItemStack_BlockPtr           = 0x18;   // const Block*
 inline constexpr uintptr_t ItemStack_AuxValue           = 0x20;   // int16_t
 inline constexpr uintptr_t ItemStack_Count              = 0x22;   // uint8_t
-inline constexpr uintptr_t Item_RawNameId               = 0xc8;   // HashedString (+0x08 std::string)
-inline constexpr uintptr_t Item_FullName                = 0xf8;   // HashedString (+0x08 std::string)
+inline constexpr uintptr_t Item_RawNameId               = 0xa8;   // HashedString (+0x08 std::string at +0xb0)
+inline constexpr uintptr_t Item_FullName                = 0xe8;   // HashedString (+0x08 std::string at +0xf0)
 
 // BlockSource & LevelChunk fields
 inline constexpr uintptr_t BlockSource_MaxHeight        = 0x40;   // int16_t (exclusive ceiling, e.g. 320)

@@ -93,7 +93,20 @@ bool extractJsonFieldRaw(std::string_view json, std::string_view key, std::strin
 }
 
 void applyPresetInternal(ModConfig& cfg, std::string_view preset) {
-    if (preset == "Classic Cyan") {
+    if (preset == "Frosted White") {
+        cfg.preset = "Frosted White";
+        cfg.renderMode = "Shaded + Wireframe";
+        cfg.colorMode = "Custom Accent";
+        cfg.fillOpacity = 0.36f;
+        cfg.wireframeOpacity = 0.62f;
+        cfg.accentRed = 255;
+        cfg.accentGreen = 255;
+        cfg.accentBlue = 255;
+        cfg.directionalShading = true;
+        cfg.showOrientationGuides = false;
+        cfg.showSubTargetPip = false;
+        cfg.subtleBreathingPulse = false;
+    } else if (preset == "Classic Cyan") {
         cfg.preset = "Classic Cyan";
         cfg.renderMode = "Shaded + Wireframe";
         cfg.colorMode = "Custom Accent";
@@ -112,27 +125,31 @@ void applyPresetInternal(ModConfig& cfg, std::string_view preset) {
         cfg.fillOpacity = 0.34f;
         cfg.wireframeOpacity = 0.88f;
         cfg.directionalShading = true;
-        cfg.showOrientationGuides = true;
-        cfg.subtleBreathingPulse = true;
+        cfg.showOrientationGuides = false;
+        cfg.subtleBreathingPulse = false;
     } else if (preset == "Crisp Wireframe") {
         cfg.preset = "Crisp Wireframe";
         cfg.renderMode = "Wireframe Only";
         cfg.colorMode = "Custom Accent";
         cfg.fillOpacity = 0.10f;
         cfg.wireframeOpacity = 0.94f;
-        cfg.accentRed = 120;
-        cfg.accentGreen = 240;
+        cfg.accentRed = 255;
+        cfg.accentGreen = 255;
         cfg.accentBlue = 255;
-        cfg.showOrientationGuides = true;
+        cfg.showOrientationGuides = false;
         cfg.subtleBreathingPulse = false;
     } else if (preset == "Subtle Minimal") {
         cfg.preset = "Subtle Minimal";
-        cfg.renderMode = "Shaded + Wireframe";
-        cfg.colorMode = "Material Adaptive";
-        cfg.fillOpacity = 0.16f;
-        cfg.wireframeOpacity = 0.56f;
+        cfg.renderMode = "Translucent Fill";
+        cfg.colorMode = "Custom Accent";
+        cfg.fillOpacity = 0.26f;
+        cfg.wireframeOpacity = 0.48f;
+        cfg.accentRed = 255;
+        cfg.accentGreen = 255;
+        cfg.accentBlue = 255;
         cfg.directionalShading = true;
-        cfg.showOrientationGuides = true;
+        cfg.showOrientationGuides = false;
+        cfg.showSubTargetPip = false;
         cfg.subtleBreathingPulse = false;
     } else if (preset == "High Contrast") {
         cfg.preset = "High Contrast";
@@ -159,6 +176,7 @@ ConfigManager& ConfigManager::instance() noexcept {
 }
 
 void ConfigManager::clampConfig(ModConfig& cfg) noexcept {
+    cfg.schemaVersion = 2;
     cfg.fillOpacity = std::clamp(cfg.fillOpacity, 0.05f, 0.85f);
     cfg.wireframeOpacity = std::clamp(cfg.wireframeOpacity, 0.10f, 1.00f);
     cfg.accentRed = std::clamp(cfg.accentRed, 0, 255);
@@ -175,13 +193,14 @@ void ConfigManager::clampConfig(ModConfig& cfg) noexcept {
         cfg.colorMode = "Custom Accent";
     }
 
-    if (cfg.preset != "Classic Cyan" &&
+    if (cfg.preset != "Frosted White" &&
+        cfg.preset != "Classic Cyan" &&
         cfg.preset != "Material Tint" &&
         cfg.preset != "Crisp Wireframe" &&
         cfg.preset != "Subtle Minimal" &&
         cfg.preset != "High Contrast" &&
         cfg.preset != "Custom") {
-        cfg.preset = "Classic Cyan";
+        cfg.preset = "Frosted White";
     }
 }
 
@@ -298,7 +317,24 @@ bool ConfigManager::loadFromFile(const std::filesystem::path& path) {
     if (!in.is_open()) return false;
     std::ostringstream ss;
     ss << in.rdbuf();
-    const ModConfig parsed = parseJson(ss.str());
+    const std::string raw = ss.str();
+    std::string verStr;
+    const int diskSchema = extractJsonFieldRaw(raw, "schemaVersion", verStr) ? parseIntValue(verStr, 1) : 1;
+    if (diskSchema < 2) {
+        // Auto-upgrade pre-v2 config files on disk to clean Frosted White v2 defaults while keeping enabled flag.
+        ModConfig upgraded{};
+        if (extractJsonFieldRaw(raw, "enabled", verStr)) {
+            upgraded.enabled = parseBoolValue(verStr, true);
+        }
+        clampConfig(upgraded);
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            config_ = upgraded;
+        }
+        (void)saveToFile(path);
+        return true;
+    }
+    const ModConfig parsed = parseJson(raw);
     {
         std::lock_guard<std::mutex> lock(mutex_);
         config_ = parsed;
@@ -322,6 +358,7 @@ bool ConfigManager::saveToFile(const std::filesystem::path& path) const {
 std::string ConfigManager::serializeJson(const ModConfig& cfg) {
     std::ostringstream ss;
     ss << "{\n"
+       << "  \"schemaVersion\": " << cfg.schemaVersion << ",\n"
        << "  \"enabled\": " << (cfg.enabled ? "true" : "false") << ",\n"
        << "  \"preset\": \"" << escapeJson(cfg.preset) << "\",\n"
        << "  \"renderMode\": \"" << escapeJson(cfg.renderMode) << "\",\n"

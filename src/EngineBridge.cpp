@@ -38,7 +38,7 @@ struct NativeChunkPos {
 };
 static_assert(sizeof(NativeChunkPos) == 8, "NativeChunkPos must be 8 bytes");
 
-// Packed ChunkBlockPos passed by value in register X1 to LevelChunk::getBlock(ChunkBlockPos)
+// Packed ChunkBlockPos passed BY CONST REFERENCE (X1 = &localPos) to LevelChunk::getBlock(const ChunkBlockPos&)
 struct NativeChunkBlockPos {
     uint8_t x{0};
     uint8_t z{0};
@@ -46,9 +46,11 @@ struct NativeChunkBlockPos {
 };
 static_assert(sizeof(NativeChunkBlockPos) == 4, "NativeChunkBlockPos must be 4 bytes");
 
-using FnLevelChunkGetBlock   = const void* (*)(const void* levelChunk, NativeChunkBlockPos localPos);
+using FnLevelChunkGetBlock   = const void* (*)(const void* levelChunk, const NativeChunkBlockPos& localPos);
 using FnActorGetDimBlockSrc  = void* (*)(void* actor);
-using FnActorIsSpectator     = bool (*)(const void* actor);
+using FnPlayerIsCreative     = bool (*)(const void* actor);
+using FnEntityGetGameType    = int32_t (*)(const void* entityContext);
+using FnLevelGetDefGameType  = int32_t (*)(const void* level);
 using FnClientGetCamActor    = void* (*)(void* clientInstance);
 using FnClientGetRegion      = void* (*)(void* clientInstance);
 using FnLevelGetHitResult    = const void* (*)(void* level);
@@ -61,7 +63,8 @@ struct ResolvedEngineApi {
     void* targetDebugRenderEnd{nullptr};
     FnLevelChunkGetBlock lcGetBlock{nullptr};
     FnActorGetDimBlockSrc actorGetBlockSource{nullptr};
-    FnActorIsSpectator actorIsSpectator{nullptr};
+    FnPlayerIsCreative playerIsCreative{nullptr};
+    FnEntityGetGameType entityGetPlayerGameType{nullptr};
     bool fastRva{false};
 };
 
@@ -610,10 +613,34 @@ void onPostDebugRenderEnd(void* debugRenderer, void* renderParams, FnDebugRender
         return;
     }
 
-    // Immediate disappearance in Spectator mode.
-    if (gApi.actorIsSpectator && gApi.actorIsSpectator(camActor)) {
+    // Resolve exact player GameType:
+    //   0 = Survival (5.5m), 1 = Creative (11.5m), 2 = Adventure (5.5m),
+    //   5 = Default (resolved via Level::getDefaultGameType()), 6 = Spectator (hidden).
+    int32_t gameType = -1;
+    if (gApi.entityGetPlayerGameType) {
+        const auto* entityCtx = static_cast<const uint8_t*>(camActor) + sig::off::Actor_EntityContext;
+        gameType = gApi.entityGetPlayerGameType(entityCtx);
+        if (gameType == 5) {
+            const void* actorLevel = nullptr;
+            if (!readFieldSafe(camActor, sig::off::Actor_LevelPtr, actorLevel) ||
+                !sig::isValidUserAddress(actorLevel, alignof(void*))) {
+                actorLevel = level;
+            }
+            const auto fnDefGt = readVtableFn<FnLevelGetDefGameType>(actorLevel, sig::off::Level_VtGetDefaultGameType);
+            if (fnDefGt) {
+                gameType = fnDefGt(actorLevel);
+            }
+        }
+    }
+
+    // Immediate disappearance in Spectator mode (GameType == 6).
+    if (gameType == 6) {
         return;
     }
+
+    const bool isCreative = (gameType == 1) || (gApi.playerIsCreative && gApi.playerIsCreative(camActor));
+    const bool isAdventure = (gameType == 2);
+    const float maxReachBlocks = isCreative ? 11.5f : 5.5f;
 
     void* blockSource = nullptr;
     if (gApi.actorGetBlockSource) {
@@ -637,40 +664,7 @@ void onPostDebugRenderEnd(void* debugRenderer, void* renderParams, FnDebugRender
     const int minBuildY = (rawMinH >= -2048 && rawMinH < rawMaxH) ? static_cast<int>(rawMinH) : -64;
     const int maxBuildY = (rawMaxH > rawMinH && rawMaxH <= 4096) ? static_cast<int>(rawMaxH) - 1 : 319;
 
-    // Read live HitResult from Level::getHitResult().
-    const void* hitRes = fnGetHitResult(level);
-    if (!sig::isValidUserAddress(hitRes, alignof(void*))) {
-        return;
-    }
-
-    int32_t hitType = 3; // HitResultType::NoHit
-    uint8_t hitFaceByte = 1;
-    int32_t hitBlockRaw[3]{0, 0, 0};
-    float hitPosRaw[3]{0.0f, 0.0f, 0.0f};
-    uint8_t hitLiquidByte = 0;
-    uint8_t hitLiquidFaceByte = 1;
-    int32_t hitLiquidPosRaw[3]{0, 0, 0};
-
-    readFieldSafe(hitRes, sig::off::HitResult_Type, hitType);
-    readFieldSafe(hitRes, sig::off::HitResult_Facing, hitFaceByte);
-    readFieldSafe(hitRes, sig::off::HitResult_BlockPos, hitBlockRaw);
-    readFieldSafe(hitRes, sig::off::HitResult_Pos, hitPosRaw);
-    readFieldSafe(hitRes, sig::off::HitResult_IsHitLiquid, hitLiquidByte);
-    readFieldSafe(hitRes, sig::off::HitResult_LiquidFacing, hitLiquidFaceByte);
-    readFieldSafe(hitRes, sig::off::HitResult_LiquidPos, hitLiquidPosRaw);
-
-    const bool hasTileHit = (hitType == 0) &&
-                            std::isfinite(hitPosRaw[0]) &&
-                            std::isfinite(hitPosRaw[1]) &&
-                            std::isfinite(hitPosRaw[2]);
-    const bool hasLiquidHit = (hitLiquidByte != 0);
-
-    // Fast early-out: aiming at sky, entity, or out of block reach -> 0 vertices IMMEDIATELY!
-    if (!hasTileHit && !hasLiquidHit) {
-        return;
-    }
-
-    // Read player AABB & rotation components safely.
+    // Read player AABB & rotation components safely first so we always know the live camera ray!
     AABB playerAabb{};
     const void* aabbComp = nullptr;
     if (readFieldSafe(camActor, sig::off::Actor_AABBCompPtr, aabbComp) &&
@@ -703,15 +697,14 @@ void onPostDebugRenderEnd(void* debugRenderer, void* renderParams, FnDebugRender
         }
     }
 
-    // Inspect mainhand & offhand items via pure read-only vtable getters.
+    // Inspect mainhand & offhand items BEFORE world raycasting so non-block items cost 0 ns!
     const auto fnCarried = readVtableFn<FnActorGetItemStack>(camActor, sig::off::Actor_VtGetCarriedItem);
     const auto fnOffhand = readVtableFn<FnActorGetItemStack>(camActor, sig::off::Actor_VtGetOffhandSlot);
 
     PlayerContextInput ctx{};
     ctx.inWorld = true;
     ctx.isSpectator = false;
-    ctx.isAdventureMode = false;
-    // Detect sneak smoothly from eye/hitbox height (< 1.65 blocks when sneaking vs 1.80 standing).
+    ctx.isAdventureMode = isAdventure;
     ctx.isSneaking = (playerAabb.sizeY() > 0.5f && playerAabb.sizeY() < 1.65f);
     ctx.pitchDeg = pitchDeg;
     ctx.yawDeg = yawDeg;
@@ -719,16 +712,100 @@ void onPostDebugRenderEnd(void* debugRenderer, void* renderParams, FnDebugRender
     if (fnCarried) ctx.mainhand = inspectItemStack(fnCarried(camActor));
     if (fnOffhand) ctx.offhand = inspectItemStack(fnOffhand(camActor));
 
-    ctx.raycast.hasBlockHit = hasTileHit;
-    ctx.raycast.hitFace = (hitFaceByte <= 5u) ? static_cast<Facing>(hitFaceByte) : Facing::Up;
-    ctx.raycast.blockPos = {hitBlockRaw[0], hitBlockRaw[1], hitBlockRaw[2]};
-    ctx.raycast.hitWorldPos = {hitPosRaw[0], hitPosRaw[1], hitPosRaw[2]};
-    ctx.raycast.hasLiquidHit = hasLiquidHit;
-    ctx.raycast.liquidFace = (hitLiquidFaceByte <= 5u) ? static_cast<Facing>(hitLiquidFaceByte) : Facing::Up;
-    ctx.raycast.liquidPos = {hitLiquidPosRaw[0], hitLiquidPosRaw[1], hitLiquidPosRaw[2]};
-    ctx.raycast.liquidWorldPos = ctx.raycast.liquidPos.centerVec();
+    if (!ctx.mainhand.valid && (!cfg.enableOffhandPreview || !ctx.offhand.valid)) {
+        return;
+    }
+
+    // Extract live sub-tick interpolated render camera position from ScreenContext::mCameraData (+0xa8 -> +0x28).
+    Vec3 playerEyePos = playerAabb.center();
+    if (playerAabb.volume() > 0.0f) {
+        playerEyePos = Vec3{
+            playerAabb.center().x,
+            playerAabb.min.y + (ctx.isSneaking ? 1.54f : 1.62f),
+            playerAabb.center().z
+        };
+    }
+
+    Vec3 renderCameraPos = playerEyePos;
+    const void* screenCtx = nullptr;
+    if (readFieldSafe(renderParams, sig::off::RenderParams_ScreenContext, screenCtx) &&
+        sig::isValidUserAddress(screenCtx, alignof(void*))) {
+        const void* camData = nullptr;
+        if (readFieldSafe(screenCtx, sig::off::ScreenContext_CameraData, camData) &&
+            sig::isValidUserAddress(camData, alignof(void*))) {
+            Vec3 rawCam{};
+            if (readFieldSafe(camData, sig::off::CameraData_WorldPos, rawCam) &&
+                std::isfinite(rawCam.x) && std::isfinite(rawCam.y) && std::isfinite(rawCam.z)) {
+                renderCameraPos = rawCam;
+            }
+        }
+    }
+
+    // In 1st person, use exact 120-FPS interpolated camera eye origin; in 3rd person, aim from player eye!
+    const Vec3 rayOrigin = ((renderCameraPos - playerEyePos).lengthSq() <= 0.85f * 0.85f)
+                               ? renderCameraPos
+                               : playerEyePos;
+    const Vec3 lookDir = PlacementResolver::lookDirectionFromAngles(pitchDeg, yawDeg);
 
     LiveWorldQuery world(blockSource, camActor, minBuildY, maxBuildY, pitchDeg, yawDeg);
+
+    // Hybrid Center-Crosshair Raycast:
+    //  - First check if vanilla Level::getHitResult() already holds a fresh hit aligned closely
+    //    with the center gaze `lookDir` (e.g. Split Controls `+` crosshair / Mouse / Controller).
+    //  - Otherwise (Android Touch Mode without Split Controls, where vanilla HitResult only
+    //    updates under finger taps / movement joystick, or between 20-TPS ticks), trace the exact
+    //    live 60-120 FPS center camera ray `(rayOrigin, lookDir, maxReachBlocks)` directly!
+    bool usedAlignedEngineHit = false;
+    const void* hitRes = fnGetHitResult(level);
+    if (sig::isValidUserAddress(hitRes, alignof(void*))) {
+        int32_t hitType = 3;
+        uint8_t hitFaceByte = 1;
+        int32_t hitBlockRaw[3]{0, 0, 0};
+        float hitPosRaw[3]{0.0f, 0.0f, 0.0f};
+        uint8_t hitLiquidByte = 0;
+        uint8_t hitLiquidFaceByte = 1;
+        int32_t hitLiquidPosRaw[3]{0, 0, 0};
+
+        readFieldSafe(hitRes, sig::off::HitResult_Type, hitType);
+        readFieldSafe(hitRes, sig::off::HitResult_Facing, hitFaceByte);
+        readFieldSafe(hitRes, sig::off::HitResult_BlockPos, hitBlockRaw);
+        readFieldSafe(hitRes, sig::off::HitResult_Pos, hitPosRaw);
+        readFieldSafe(hitRes, sig::off::HitResult_IsHitLiquid, hitLiquidByte);
+        readFieldSafe(hitRes, sig::off::HitResult_LiquidFacing, hitLiquidFaceByte);
+        readFieldSafe(hitRes, sig::off::HitResult_LiquidPos, hitLiquidPosRaw);
+
+        if (hitType == 0 &&
+            std::isfinite(hitPosRaw[0]) &&
+            std::isfinite(hitPosRaw[1]) &&
+            std::isfinite(hitPosRaw[2])) {
+            const Vec3 hitVec{hitPosRaw[0], hitPosRaw[1], hitPosRaw[2]};
+            const Vec3 delta = hitVec - rayOrigin;
+            const float dist = delta.length();
+            if (dist > 0.05f && dist <= maxReachBlocks + 0.75f) {
+                const float cosAngle = (delta.x * lookDir.x + delta.y * lookDir.y + delta.z * lookDir.z) / dist;
+                if (cosAngle >= 0.996f) {
+                    ctx.raycast.hasBlockHit = true;
+                    ctx.raycast.hitFace = (hitFaceByte <= 5u) ? static_cast<Facing>(hitFaceByte) : Facing::Up;
+                    ctx.raycast.blockPos = {hitBlockRaw[0], hitBlockRaw[1], hitBlockRaw[2]};
+                    ctx.raycast.hitWorldPos = hitVec;
+                    ctx.raycast.hasLiquidHit = (hitLiquidByte != 0);
+                    ctx.raycast.liquidFace = (hitLiquidFaceByte <= 5u) ? static_cast<Facing>(hitLiquidFaceByte) : Facing::Up;
+                    ctx.raycast.liquidPos = {hitLiquidPosRaw[0], hitLiquidPosRaw[1], hitLiquidPosRaw[2]};
+                    ctx.raycast.liquidWorldPos = ctx.raycast.liquidPos.centerVec();
+                    usedAlignedEngineHit = true;
+                }
+            }
+        }
+    }
+
+    if (!usedAlignedEngineHit) {
+        ctx.raycast = PlacementResolver::raycastWorld(rayOrigin, lookDir, maxReachBlocks, world);
+    }
+
+    if (!ctx.raycast.hasBlockHit && !ctx.raycast.hasLiquidHit) {
+        return;
+    }
+
     const PlacementPreviewState preview = PlacementResolver::resolve(ctx, world, cfg);
     if (!preview.valid || preview.worldBoxes.empty()) {
         return;
@@ -739,7 +816,7 @@ void onPostDebugRenderEnd(void* debugRenderer, void* renderParams, FnDebugRender
                            .count();
     const float pulsePhase = static_cast<float>(nowMs % 3142LL) * 0.002f;
 
-    GhostMesher::buildMesh(preview, cfg, playerAabb.center(), pulsePhase, gFrameMesh);
+    GhostMesher::buildMesh(preview, cfg, renderCameraPos, pulsePhase, gFrameMesh);
     if (gFrameMesh.empty()) {
         return;
     }
@@ -872,8 +949,10 @@ bool EngineBridge::installHooks() {
             resolveRvaChecked(base, sig::rva::LevelChunk_getBlock, sig::rva::LevelChunk_getBlock_W10));
         fastApi.actorGetBlockSource = reinterpret_cast<FnActorGetDimBlockSrc>(
             resolveRvaChecked(base, sig::rva::Actor_getDimensionBlockSource, sig::rva::Actor_getDimBlockSource_W10));
-        fastApi.actorIsSpectator = reinterpret_cast<FnActorIsSpectator>(
-            resolveRvaChecked(base, sig::rva::Actor_isSpectator, sig::rva::Actor_isSpectator_W10));
+        fastApi.playerIsCreative = reinterpret_cast<FnPlayerIsCreative>(
+            resolveRvaChecked(base, sig::rva::Player_isCreative, sig::rva::Player_isCreative_W10));
+        fastApi.entityGetPlayerGameType = reinterpret_cast<FnEntityGetGameType>(
+            resolveRvaChecked(base, sig::rva::Entity_getPlayerGameType, sig::rva::Entity_getPlayerGameType_W10));
 
         if (attachDebugRenderHookLocked(fastApi)) {
             return true;
@@ -899,8 +978,10 @@ bool EngineBridge::installHooks() {
         }
         const uintptr_t dimBsBody = pl::memory::resolveSignature(
             sig::pattern::Actor_getDimBlockSource_Body10, "libminecraftpe.so");
-        const uintptr_t specBody = pl::memory::resolveSignature(
-            sig::pattern::Actor_isSpectator_Body10, "libminecraftpe.so");
+        const uintptr_t creativeBody = pl::memory::resolveSignature(
+            sig::pattern::Player_isCreative_Body10, "libminecraftpe.so");
+        const uintptr_t gameTypeBody = pl::memory::resolveSignature(
+            sig::pattern::Entity_getPlayerGameType_Body10, "libminecraftpe.so");
 
         ResolvedEngineApi scanned{};
         scanned.fastRva = false;
@@ -909,8 +990,11 @@ bool EngineBridge::installHooks() {
         if (dimBsBody > 0x10) {
             scanned.actorGetBlockSource = reinterpret_cast<FnActorGetDimBlockSrc>(dimBsBody - 0x10);
         }
-        if (specBody > 0x10) {
-            scanned.actorIsSpectator = reinterpret_cast<FnActorIsSpectator>(specBody - 0x10);
+        if (creativeBody > 0x10) {
+            scanned.playerIsCreative = reinterpret_cast<FnPlayerIsCreative>(creativeBody - 0x10);
+        }
+        if (gameTypeBody > 0x10) {
+            scanned.entityGetPlayerGameType = reinterpret_cast<FnEntityGetGameType>(gameTypeBody - 0x10);
         }
 
         std::lock_guard<std::mutex> guard(gHookMutex);
@@ -974,9 +1058,11 @@ void EngineBridge::flushMeshIntoDebugRenderer(
 
     auto* dbgBytes      = static_cast<uint8_t*>(debugRenderer);
     auto* activeFlagPtr = reinterpret_cast<uint8_t*>(dbgBytes + sig::off::DebugRenderer_ActiveFlag);
+    auto* enabledPtr    = reinterpret_cast<uint8_t*>(dbgBytes + sig::off::DebugRenderer_EnabledByte);
     auto* lineVecPtrs   = reinterpret_cast<const PackedVertex**>(dbgBytes + sig::off::DebugRenderer_LineVec);
     auto* triVecPtrs    = reinterpret_cast<const PackedVertex**>(dbgBytes + sig::off::DebugRenderer_TriVec);
 
+    const uint8_t savedEnabled     = *enabledPtr;
     const PackedVertex* savedLine[3] = {lineVecPtrs[0], lineVecPtrs[1], lineVecPtrs[2]};
     const PackedVertex* savedTri[3]  = {triVecPtrs[0],  triVecPtrs[1],  triVecPtrs[2]};
 
@@ -990,6 +1076,7 @@ void EngineBridge::flushMeshIntoDebugRenderer(
         triVecPtrs[1]  = end;
         triVecPtrs[2]  = end;
         *activeFlagPtr = 1u;
+        *enabledPtr    = 1u;
         origFn(debugRenderer, renderParams);
     }
 
@@ -1003,6 +1090,7 @@ void EngineBridge::flushMeshIntoDebugRenderer(
         lineVecPtrs[1] = end;
         lineVecPtrs[2] = end;
         *activeFlagPtr = 1u;
+        *enabledPtr    = 1u;
         origFn(debugRenderer, renderParams);
     }
 
@@ -1012,6 +1100,7 @@ void EngineBridge::flushMeshIntoDebugRenderer(
     triVecPtrs[0]  = savedTri[0];
     triVecPtrs[1]  = savedTri[1];
     triVecPtrs[2]  = savedTri[2];
+    *enabledPtr    = savedEnabled;
     *activeFlagPtr = 0u;
 }
 

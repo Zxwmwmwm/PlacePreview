@@ -10,11 +10,13 @@
 namespace buildghost {
 
 struct ModConfig {
+    int schemaVersion{2};
     bool enabled{true};
 
     // Quick visual presets:
-    //   "Classic Cyan", "Material Tint", "Crisp Wireframe", "Subtle Minimal", "High Contrast", "Custom"
-    std::string preset{"Classic Cyan"};
+    //   "Frosted White", "Classic Cyan", "Material Tint", "Crisp Wireframe",
+    //   "Subtle Minimal", "High Contrast", "Custom"
+    std::string preset{"Frosted White"};
 
     // "Shaded + Wireframe", "Translucent Fill", "Wireframe Only"
     std::string renderMode{"Shaded + Wireframe"};
@@ -22,20 +24,20 @@ struct ModConfig {
     // "Material Adaptive", "Custom Accent"
     std::string colorMode{"Custom Accent"};
 
-    // Translucent fill & crisp edge alpha [0.05..1.00]
-    float fillOpacity{0.28f};
-    float wireframeOpacity{0.86f};
+    // Clean frosted white translucent fill & crisp edge alpha [0.05..1.00]
+    float fillOpacity{0.36f};
+    float wireframeOpacity{0.62f};
 
-    // Accent RGB when colorMode == "Custom Accent"
-    int accentRed{92};
-    int accentGreen{224};
+    // Accent RGB when colorMode == "Custom Accent" (default pure frosted white: 255, 255, 255)
+    int accentRed{255};
+    int accentGreen{255};
     int accentBlue{255};
 
-    // 3D depth shading & orientation guides
+    // 3D depth shading & optional schematic orientation guides
     bool directionalShading{true};
-    bool showOrientationGuides{true};
-    bool showSubTargetPip{true};
-    bool subtleBreathingPulse{true};
+    bool showOrientationGuides{false};
+    bool showSubTargetPip{false};
+    bool subtleBreathingPulse{false};
 
     // Gameplay behavior options
     bool enableOffhandPreview{true};

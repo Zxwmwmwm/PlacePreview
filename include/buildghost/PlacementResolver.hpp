@@ -95,6 +95,18 @@ public:
 
 class PlacementResolver {
 public:
+    // Computes unit world-space camera look vector from Bedrock pitch/yaw degrees.
+    [[nodiscard]] static Vec3 lookDirectionFromAngles(float pitchDeg, float yawDeg) noexcept;
+
+    // Exact 3D Amanatides-Woo voxel + sub-AABB raycast along the center camera gaze
+    // (guarantees smooth 60-120 FPS center-crosshair tracking across both Split Controls
+    // and Android Touch Mode across Survival/Adventure 5.5m & Creative 11.5m reaches).
+    [[nodiscard]] static RaycastHitInput raycastWorld(
+        const Vec3& origin,
+        const Vec3& direction,
+        float maxReachBlocks,
+        const IWorldQuery& world);
+
     // Evaluates the complete placement preview state for the current frame.
     // Returns PlacementPreviewState{.valid = false} IMMEDIATELY whenever placement is invalid,
     // out of reach, obstructed, or holding a non-placeable item, and updates IMMEDIATELY when

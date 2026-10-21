@@ -12,6 +12,7 @@
 #include <cstddef>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <map>
 #include <set>
@@ -524,9 +525,10 @@ void testNativeHardwareRegressionInvariants() {
     BG_EXPECT(StateInspector::validateBlockSupport(
         "minecraft:wheat", {0, 65, 0}, Facing::Up, "minecraft:farmland", "minecraft:air", "minecraft:farmland"));
 
-    // 4. Simulated DebugRenderer (+0x08 flag, +0x50 lineVec[3], +0x68 triVec[3]) non-owning swap
-    alignas(16) uint8_t fakeDebugRenderer[0x90]{};
+    // 4. Simulated DebugRenderer (+0x08 flag, +0x01db enabled, +0x50 lineVec[3], +0x68 triVec[3]) non-owning swap
+    alignas(16) uint8_t fakeDebugRenderer[0x200]{};
     alignas(16) uint8_t fakeRenderParams[0x40]{};
+    fakeDebugRenderer[sig::off::DebugRenderer_EnabledByte] = 0u;
     const PackedVertex sentinelLine{};
     const PackedVertex sentinelTri{};
     auto* lineSlots = reinterpret_cast<const PackedVertex**>(fakeDebugRenderer + sig::off::DebugRenderer_LineVec);
@@ -546,7 +548,8 @@ void testNativeHardwareRegressionInvariants() {
     auto mockRenderEnd = [](void* dbg, void* /*rp*/) {
         auto* bytes = static_cast<uint8_t*>(dbg);
         const uint8_t flag = bytes[sig::off::DebugRenderer_ActiveFlag];
-        if (!flag) return;
+        const uint8_t enabled = bytes[sig::off::DebugRenderer_EnabledByte];
+        if (!flag || !enabled) return;
         bytes[sig::off::DebugRenderer_ActiveFlag] = 0u;
         auto* lv = reinterpret_cast<const PackedVertex* const*>(bytes + sig::off::DebugRenderer_LineVec);
         auto* tv = reinterpret_cast<const PackedVertex* const*>(bytes + sig::off::DebugRenderer_TriVec);
@@ -562,6 +565,7 @@ void testNativeHardwareRegressionInvariants() {
     BG_EXPECT(sCapturedTriVerts == mesh.packedTriangles.size());
     BG_EXPECT(sCapturedLineVerts == mesh.packedLines.size());
     BG_EXPECT(fakeDebugRenderer[sig::off::DebugRenderer_ActiveFlag] == 0u);
+    BG_EXPECT(fakeDebugRenderer[sig::off::DebugRenderer_EnabledByte] == 0u);
     BG_EXPECT(lineSlots[0] == &sentinelLine && lineSlots[1] == &sentinelLine + 1 && lineSlots[2] == &sentinelLine + 1);
     BG_EXPECT(triSlots[0] == &sentinelTri && triSlots[1] == &sentinelTri + 1 && triSlots[2] == &sentinelTri + 1);
 
@@ -572,6 +576,93 @@ void testNativeHardwareRegressionInvariants() {
     BG_EXPECT(!EngineBridge::instance().stats().hooksInstalled);
 }
 
+void testCenterCrosshairRaycastAndCrashFixes() {
+    // 1. Hardware-verified 1.26.52.03 offsets & RVAs regression guards:
+    BG_EXPECT(sig::off::Item_RawNameId == 0xa8u);
+    BG_EXPECT(sig::off::Item_FullName == 0xe8u);
+    BG_EXPECT(sig::rva::Player_isCreative == 0x0f58e6c8ull);
+    BG_EXPECT(sig::rva::Entity_getPlayerGameType == 0x0f9ba104ull);
+    BG_EXPECT(sig::rva::Entity_getPlayerGameType_W10 == 0xcb0b0108u);
+
+    // 2. Exact reproduction of real device gaze ray from live world trace:
+    //    player eye = (346.76f, 64.62f, -28.78f), pitch = +27.66f, yaw = -125.82f -> hits (348, 63, -30)!
+    MockWorld world;
+    for (int x = 344; x <= 354; ++x) {
+        for (int z = -34; z <= -24; ++z) {
+            world.setSolidBlock({x, 62, z}, "minecraft:grass_block");
+        }
+    }
+    world.setSolidBlock({348, 63, -30}, "minecraft:dirt");
+
+    const Vec3 eyePos{346.76f, 64.62f, -28.78f};
+    const Vec3 lookDir = PlacementResolver::lookDirectionFromAngles(27.66f, -125.82f);
+    const RaycastHitInput hit = PlacementResolver::raycastWorld(eyePos, lookDir, 5.5f, world);
+    BG_EXPECT(hit.hasBlockHit);
+    BG_EXPECT(hit.blockPos == BlockPos(348, 63, -30));
+    BG_EXPECT(hit.hitFace == Facing::West);
+
+    PlayerContextInput ctx = makeDefaultPlayer();
+    ctx.playerAabb = AABB{346.46f, 63.00f, -29.08f, 347.06f, 64.80f, -28.48f};
+    ctx.pitchDeg = 27.66f;
+    ctx.yawDeg = -125.82f;
+    ctx.mainhand.itemIdentifier = "minecraft:dirt";
+    ctx.mainhand.directBlockIdentifier = "minecraft:dirt";
+    ctx.raycast = hit;
+
+    const ModConfig defaultCfg{};
+    BG_EXPECT(defaultCfg.preset == "Frosted White");
+    BG_EXPECT(defaultCfg.accentRed == 255 && defaultCfg.accentGreen == 255 && defaultCfg.accentBlue == 255);
+
+    // Standing with hitbox corner at (347.06, 63.00, -29.08) overlaps (347, 63, -30) -> hides immediately!
+    BG_EXPECT(!PlacementResolver::resolve(ctx, world, defaultCfg).valid);
+
+    // Stepping 0.15m back clears (347, 63, -30) -> immediately shows clean 3-face isometric white preview!
+    ctx.playerAabb = AABB{346.20f, 63.00f, -29.08f, 346.80f, 64.80f, -28.48f};
+    const PlacementPreviewState livePreview = PlacementResolver::resolve(ctx, world, defaultCfg);
+    BG_EXPECT(livePreview.valid);
+    BG_EXPECT(livePreview.primaryPos == BlockPos(347, 63, -30));
+
+    // Isometric camera views 3 exterior faces -> exactly 9 deduplicated visible cube edges (zero hidden back-corner X lines!)
+    GhostMeshOutput isoMesh{};
+    GhostMesher::buildMesh(livePreview, defaultCfg, eyePos, 0.0f, isoMesh);
+    BG_EXPECT(isoMesh.lines.size() == 9);
+    BG_EXPECT(isoMesh.triangles.size() == 12); // 3 visible faces * 2 windings * 2 triangles
+
+    // 3. Creative (11.5m) vs Survival (5.5m) dynamic reach & sub-AABB slab precision:
+    MockWorld reachWorld;
+    reachWorld.setSolidBlock({0, 64, 9}, "minecraft:stone"); // 9.0m away along +Z
+    const Vec3 reachOrigin{0.5f, 64.5f, 0.0f};
+    const Vec3 reachDir = PlacementResolver::lookDirectionFromAngles(0.0f, 0.0f); // +Z
+    BG_EXPECT(!PlacementResolver::raycastWorld(reachOrigin, reachDir, 5.5f, reachWorld).hasBlockHit);
+    const auto creativeHit = PlacementResolver::raycastWorld(reachOrigin, reachDir, 11.5f, reachWorld);
+    BG_EXPECT(creativeHit.hasBlockHit && creativeHit.blockPos == BlockPos(0, 64, 9) && creativeHit.hitFace == Facing::North);
+
+    // Ray passes cleanly OVER a bottom slab at (0, 64, 4) when y = 64.75 and hits wall behind at (0, 64, 6),
+    // then hits the bottom slab when aiming lower at y = 64.25!
+    MockWorld slabWorld;
+    slabWorld.setBottomSlab({0, 64, 4}, "minecraft:oak_slab");
+    slabWorld.setSolidBlock({0, 64, 6}, "minecraft:stone");
+    const auto overSlab = PlacementResolver::raycastWorld({0.5f, 64.75f, 0.0f}, {0.0f, 0.0f, 1.0f}, 8.0f, slabWorld);
+    BG_EXPECT(overSlab.hasBlockHit && overSlab.blockPos == BlockPos(0, 64, 6));
+    const auto hitSlab = PlacementResolver::raycastWorld({0.5f, 64.25f, 0.0f}, {0.0f, 0.0f, 1.0f}, 8.0f, slabWorld);
+    BG_EXPECT(hitSlab.hasBlockHit && hitSlab.blockPos == BlockPos(0, 64, 4) && hitSlab.hitFace == Facing::North);
+
+    // 4. Automatic v1 config file upgrade to clean Frosted White v2 defaults!
+    const auto v1Dir = std::filesystem::temp_directory_path() / "buildghost_v1_upgrade_test";
+    std::filesystem::remove_all(v1Dir);
+    std::filesystem::create_directories(v1Dir);
+    {
+        std::ofstream legacyOut(v1Dir / "buildghost.json");
+        legacyOut << "{\n  \"enabled\": true,\n  \"preset\": \"Classic Cyan\",\n  \"accentRed\": 92\n}\n";
+    }
+    ConfigManager::instance().init(v1Dir);
+    const ModConfig migrated = ConfigManager::instance().snapshot();
+    BG_EXPECT(migrated.schemaVersion == 2);
+    BG_EXPECT(migrated.preset == "Frosted White");
+    BG_EXPECT(migrated.accentRed == 255 && migrated.accentGreen == 255 && migrated.accentBlue == 255);
+    std::filesystem::remove_all(v1Dir);
+}
+
 } // namespace
 
 int main() {
@@ -580,6 +671,7 @@ int main() {
     testOrientationsSlabsStairsPillarsDoorsBeds();
     testConfigPersistenceAndVersionMetadata();
     testNativeHardwareRegressionInvariants();
+    testCenterCrosshairRaycastAndCrashFixes();
 
     if (gFailures > 0) {
         std::cerr << "BuildGhost test suite failed with " << gFailures << " error(s)." << std::endl;

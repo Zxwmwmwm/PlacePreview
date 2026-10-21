@@ -96,20 +96,11 @@ void pushQuadTwoSided(
     // Compute unit normal of (p1 - p0) x (p2 - p0) so interior reverse-wound faces are inset
     // slightly (0.0014m) with softer depth alpha — guaranteeing ZERO coplanar Z-fighting whether
     // the active material culls backfaces or renders double-sided!
-    const Vec3 e1 = p1World - p0World;
-    const Vec3 e2 = p2World - p0World;
-    Vec3 nrm{
-        e1.y * e2.z - e1.z * e2.y,
-        e1.z * e2.x - e1.x * e2.z,
-        e1.x * e2.y - e1.y * e2.x
-    };
-    const float nLen = nrm.length();
-    const Vec3 inset = (nLen > 1e-6f) ? (nrm * (-0.0014f / nLen)) : Vec3{};
-    const Vec3 b0World = p0World + inset;
-    const Vec3 b1World = p1World + inset;
-    const Vec3 b2World = p2World + inset;
-    const Vec3 b3World = p3World + inset;
-    const uint32_t backAbgr = scalePackedAbgrAlpha(abgr, 0.45f);
+    const Vec3 b0World = p0World;
+    const Vec3 b1World = p1World;
+    const Vec3 b2World = p2World;
+    const Vec3 b3World = p3World;
+    const uint32_t backAbgr = abgr;
 
     // World-space 16-byte PackedVertex triangles for DebugRenderer::renderEnd (+0x68, mode=2):
     out.packedTriangles.push_back(PackedVertex{p0World.x, p0World.y, p0World.z, abgr});
@@ -224,15 +215,52 @@ Rect2D faceRect2D(const AABB& b, Facing f) noexcept {
     return {};
 }
 
+struct EmittedEdge {
+    Vec3 a{};
+    Vec3 b{};
+};
+
+void pushLineDedup(
+    GhostMeshOutput& out,
+    const Vec3& camPos,
+    std::vector<EmittedEdge>& emittedEdges,
+    const Vec3& aWorld,
+    const Vec3& bWorld,
+    uint32_t abgr) {
+
+    constexpr float kDupEpsSq = 2.5e-4f;
+    for (const auto& e : emittedEdges) {
+        const bool sameDir = (e.a - aWorld).lengthSq() <= kDupEpsSq && (e.b - bWorld).lengthSq() <= kDupEpsSq;
+        const bool revDir  = (e.a - bWorld).lengthSq() <= kDupEpsSq && (e.b - aWorld).lengthSq() <= kDupEpsSq;
+        if (sameDir || revDir) {
+            return;
+        }
+    }
+    emittedEdges.push_back(EmittedEdge{aWorld, bWorld});
+    pushLine(out, camPos, aWorld, bWorld, abgr);
+}
+
+bool faceVisibleFromCamera(const AABB& b, Facing f, const Vec3& camPos) noexcept {
+    switch (f) {
+        case Facing::Up:    return camPos.y > b.max.y - 1e-3f;
+        case Facing::Down:  return camPos.y < b.min.y + 1e-3f;
+        case Facing::South: return camPos.z > b.max.z - 1e-3f;
+        case Facing::North: return camPos.z < b.min.z + 1e-3f;
+        case Facing::East:  return camPos.x > b.max.x - 1e-3f;
+        case Facing::West:  return camPos.x < b.min.x + 1e-3f;
+    }
+    return true;
+}
+
 float faceLightFactor(Facing f, bool directionalShading) noexcept {
     if (!directionalShading) return 1.0f;
     switch (f) {
         case Facing::Up:    return 1.00f;
         case Facing::North:
-        case Facing::South: return 0.84f;
+        case Facing::South: return 0.86f;
         case Facing::West:
-        case Facing::East:  return 0.70f;
-        case Facing::Down:  return 0.56f;
+        case Facing::East:  return 0.73f;
+        case Facing::Down:  return 0.60f;
     }
     return 1.0f;
 }
@@ -240,6 +268,7 @@ float faceLightFactor(Facing f, bool directionalShading) noexcept {
 void emitFaceRectQuad(
     GhostMeshOutput& out,
     const Vec3& camPos,
+    std::vector<EmittedEdge>& emittedEdges,
     Facing f,
     float plane,
     const Rect2D& r,
@@ -294,10 +323,10 @@ void emitFaceRectQuad(
         pushQuadTwoSided(out, camPos, c0, c1, c2, c3, fillAbgr);
     }
     if (emitWire) {
-        pushLine(out, camPos, c0, c1, wireAbgr);
-        pushLine(out, camPos, c1, c2, wireAbgr);
-        pushLine(out, camPos, c2, c3, wireAbgr);
-        pushLine(out, camPos, c3, c0, wireAbgr);
+        pushLineDedup(out, camPos, emittedEdges, c0, c1, wireAbgr);
+        pushLineDedup(out, camPos, emittedEdges, c1, c2, wireAbgr);
+        pushLineDedup(out, camPos, emittedEdges, c2, c3, wireAbgr);
+        pushLineDedup(out, camPos, emittedEdges, c3, c0, wireAbgr);
     }
 }
 
@@ -539,14 +568,32 @@ void GhostMesher::buildMesh(
     outMesh.packedTriangles.reserve(preview.worldBoxes.size() * 84);
     outMesh.packedLines.reserve(preview.worldBoxes.size() * 64 + 64);
 
-    // 1. Emit coplanar-culled exterior surfaces & crisp edges across ALL world sub-boxes!
+    std::vector<EmittedEdge> emittedEdges;
+    emittedEdges.reserve(preview.worldBoxes.size() * 12 + 8);
+
+    // 1. Emit camera-facing exterior surfaces & deduplicated silhouette/corner edges across ALL sub-boxes!
     for (std::size_t i = 0; i < preview.worldBoxes.size(); ++i) {
         const AABB box = preview.worldBoxes[i].normalized();
         if (box.isDegenerate()) {
             continue;
         }
 
+        // If camera is inside the box (rare close-up inspection), keep all faces visible;
+        // otherwise render strictly exterior faces oriented toward `cameraWorldPos` so back walls
+        // and hidden internal back-corner edges never clutter the translucent preview!
+        bool anyCameraFacing = false;
+        for (Facing fCheck : kAllFaces) {
+            if (faceVisibleFromCamera(box, fCheck, cameraWorldPos)) {
+                anyCameraFacing = true;
+                break;
+            }
+        }
+
         for (Facing face : kAllFaces) {
+            if (anyCameraFacing && !faceVisibleFromCamera(box, face, cameraWorldPos)) {
+                continue;
+            }
+
             const float plane = facePlaneCoord(box, face);
             const Facing opp = oppositeFacing(face);
 
@@ -581,7 +628,7 @@ void GhostMesher::buildMesh(
                 litBase.g,
                 litBase.b,
                 fillAlpha);
-            const RgbaColor brightEdgeBase = baseRgb.shaded(std::min(1.15f, light + 0.18f));
+            const RgbaColor brightEdgeBase = baseRgb.shaded(std::min(1.0f, light + 0.14f));
             const RgbaColor edgeColor = RgbaColor::withFloatAlpha(
                 brightEdgeBase.r,
                 brightEdgeBase.g,
@@ -593,6 +640,7 @@ void GhostMesher::buildMesh(
                     emitFaceRectQuad(
                         outMesh,
                         cameraWorldPos,
+                        emittedEdges,
                         face,
                         plane,
                         r,
@@ -609,17 +657,20 @@ void GhostMesher::buildMesh(
     if (preview.hasMergeOutlineBox && emitWire) {
         const uint32_t mergeAbgr = RgbaColor::withFloatAlpha(
             255, 255, 255, std::min(1.0f, wireAlpha * 0.45f)).packAbgr();
-        for (Facing f : {Facing::Up, Facing::Down}) {
-            emitFaceRectQuad(
-                outMesh,
-                cameraWorldPos,
-                f,
-                facePlaneCoord(preview.mergeOutlineBox, f),
-                faceRect2D(preview.mergeOutlineBox, f),
-                0u,
-                false,
-                mergeAbgr,
-                true);
+        for (Facing f : kAllFaces) {
+            if (faceVisibleFromCamera(preview.mergeOutlineBox, f, cameraWorldPos)) {
+                emitFaceRectQuad(
+                    outMesh,
+                    cameraWorldPos,
+                    emittedEdges,
+                    f,
+                    facePlaneCoord(preview.mergeOutlineBox, f),
+                    faceRect2D(preview.mergeOutlineBox, f),
+                    0u,
+                    false,
+                    mergeAbgr,
+                    true);
+            }
         }
     }
 

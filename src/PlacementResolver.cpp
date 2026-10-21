@@ -336,7 +336,221 @@ PlacementPreviewState tryResolveSingleHand(
     return out;
 }
 
+bool rayIntersectAabb(
+    const Vec3& origin,
+    const Vec3& dir,
+    const AABB& rawBox,
+    float maxDist,
+    float& outT,
+    Facing& outFace) noexcept {
+
+    const AABB box = rawBox.normalized();
+    float tNear = -1e30f;
+    float tFar  =  1e30f;
+    Facing enterFace = Facing::Up;
+
+    const float orig[3]  = {origin.x, origin.y, origin.z};
+    const float d[3]     = {dir.x, dir.y, dir.z};
+    const float bmin[3]  = {box.min.x, box.min.y, box.min.z};
+    const float bmax[3]  = {box.max.x, box.max.y, box.max.z};
+    const Facing negF[3] = {Facing::West, Facing::Down, Facing::North};
+    const Facing posF[3] = {Facing::East, Facing::Up,   Facing::South};
+
+    for (int axis = 0; axis < 3; ++axis) {
+        if (std::fabs(d[axis]) < 1e-7f) {
+            if (orig[axis] < bmin[axis] || orig[axis] > bmax[axis]) {
+                return false;
+            }
+        } else {
+            const float inv = 1.0f / d[axis];
+            float t0 = (bmin[axis] - orig[axis]) * inv;
+            float t1 = (bmax[axis] - orig[axis]) * inv;
+            Facing axisFace = negF[axis];
+            if (d[axis] < 0.0f) {
+                std::swap(t0, t1);
+                axisFace = posF[axis];
+            }
+            if (t0 > tNear) {
+                tNear = t0;
+                enterFace = axisFace;
+            }
+            if (t1 < tFar) {
+                tFar = t1;
+            }
+            if (tNear > tFar || tFar < 0.0f || tNear > maxDist) {
+                return false;
+            }
+        }
+    }
+
+    if (tNear < -1e-4f) {
+        return false;
+    }
+    outT = std::max(0.0f, tNear);
+    outFace = enterFace;
+    return outT <= maxDist;
+}
+
+bool isLiquidName(std::string_view stripped) noexcept {
+    return stripped == "water" || stripped == "flowing_water" ||
+           stripped == "lava" || stripped == "flowing_lava";
+}
+
 } // namespace
+
+Vec3 PlacementResolver::lookDirectionFromAngles(float pitchDeg, float yawDeg) noexcept {
+    constexpr float kDegToRad = 3.14159265358979323846f / 180.0f;
+    const float pitchRad = pitchDeg * kDegToRad;
+    const float yawRad   = yawDeg * kDegToRad;
+    const float cosPitch = std::cos(pitchRad);
+    return Vec3{
+        -std::sin(yawRad) * cosPitch,
+        -std::sin(pitchRad),
+         std::cos(yawRad) * cosPitch
+    };
+}
+
+RaycastHitInput PlacementResolver::raycastWorld(
+    const Vec3& origin,
+    const Vec3& direction,
+    float maxReachBlocks,
+    const IWorldQuery& world) {
+
+    RaycastHitInput result{};
+    const float dirLenSq = direction.lengthSq();
+    if (!std::isfinite(origin.x) || !std::isfinite(origin.y) || !std::isfinite(origin.z) ||
+        !std::isfinite(dirLenSq) || dirLenSq < 1e-8f || maxReachBlocks <= 0.1f) {
+        return result;
+    }
+
+    const float invLen = 1.0f / std::sqrt(dirLenSq);
+    const Vec3 dir{direction.x * invLen, direction.y * invLen, direction.z * invLen};
+
+    int vx = static_cast<int>(std::floor(origin.x));
+    int vy = static_cast<int>(std::floor(origin.y));
+    int vz = static_cast<int>(std::floor(origin.z));
+
+    const int stepX = (dir.x >= 0.0f) ? 1 : -1;
+    const int stepY = (dir.y >= 0.0f) ? 1 : -1;
+    const int stepZ = (dir.z >= 0.0f) ? 1 : -1;
+
+    const float tDeltaX = (std::fabs(dir.x) > 1e-7f) ? (1.0f / std::fabs(dir.x)) : 1e30f;
+    const float tDeltaY = (std::fabs(dir.y) > 1e-7f) ? (1.0f / std::fabs(dir.y)) : 1e30f;
+    const float tDeltaZ = (std::fabs(dir.z) > 1e-7f) ? (1.0f / std::fabs(dir.z)) : 1e30f;
+
+    float tMaxX = (std::fabs(dir.x) > 1e-7f)
+                      ? (((dir.x >= 0.0f ? static_cast<float>(vx + 1) : static_cast<float>(vx)) - origin.x) / dir.x)
+                      : 1e30f;
+    float tMaxY = (std::fabs(dir.y) > 1e-7f)
+                      ? (((dir.y >= 0.0f ? static_cast<float>(vy + 1) : static_cast<float>(vy)) - origin.y) / dir.y)
+                      : 1e30f;
+    float tMaxZ = (std::fabs(dir.z) > 1e-7f)
+                      ? (((dir.z >= 0.0f ? static_cast<float>(vz + 1) : static_cast<float>(vz)) - origin.z) / dir.z)
+                      : 1e30f;
+
+    const int minY = world.minBuildHeight();
+    const int maxY = world.maxBuildHeight();
+    const int maxSteps = std::clamp(static_cast<int>(std::ceil(maxReachBlocks * 3.0f)) + 6, 8, 96);
+
+    float tCurrent = 0.0f;
+    for (int step = 0; step < maxSteps && tCurrent <= maxReachBlocks; ++step) {
+        if (vy >= minY && vy <= maxY) {
+            const BlockPos cell{vx, vy, vz};
+            const std::string blockId = world.getBlockIdentifier(cell);
+            const std::string_view stripped = StateInspector::stripNamespace(blockId);
+
+            if (!stripped.empty() &&
+                stripped != "air" &&
+                stripped != "cave_air" &&
+                stripped != "void_air" &&
+                stripped != "light_block" &&
+                stripped != "structure_void") {
+
+                if (isLiquidName(stripped)) {
+                    if (!result.hasLiquidHit) {
+                        const std::string aboveId = world.getBlockIdentifier(cell.offset(0, 1, 0));
+                        const float topH = isLiquidName(StateInspector::stripNamespace(aboveId)) ? 1.0f : 0.90f;
+                        const AABB liqBox{
+                            {static_cast<float>(vx), static_cast<float>(vy), static_cast<float>(vz)},
+                            {static_cast<float>(vx + 1), static_cast<float>(vy) + topH, static_cast<float>(vz + 1)}
+                        };
+                        float tLiq = 0.0f;
+                        Facing fLiq = Facing::Up;
+                        if (rayIntersectAabb(origin, dir, liqBox, maxReachBlocks, tLiq, fLiq)) {
+                            result.hasLiquidHit = true;
+                            result.liquidFace = fLiq;
+                            result.liquidPos = cell;
+                            result.liquidWorldPos = origin + dir * tLiq;
+                        }
+                    }
+                } else {
+                    std::vector<AABB> boxes = world.getExistingBlockWorldBoxes(cell);
+                    if (boxes.empty()) {
+                        // Clickable selection box for non-colliding replaceable flora / snow layers / torches.
+                        if (stripped == "snow_layer" || stripped == "glow_lichen" || stripped == "sculk_vein") {
+                            boxes.push_back(AABB{
+                                {static_cast<float>(vx), static_cast<float>(vy), static_cast<float>(vz)},
+                                {static_cast<float>(vx + 1), static_cast<float>(vy) + 0.125f, static_cast<float>(vz + 1)}
+                            });
+                        } else {
+                            boxes.push_back(AABB{
+                                {static_cast<float>(vx) + 0.10f, static_cast<float>(vy), static_cast<float>(vz) + 0.10f},
+                                {static_cast<float>(vx) + 0.90f, static_cast<float>(vy) + 0.80f, static_cast<float>(vz) + 0.90f}
+                            });
+                        }
+                    }
+
+                    float bestT = maxReachBlocks + 1.0f;
+                    Facing bestFace = Facing::Up;
+                    bool hitAny = false;
+                    for (const auto& box : boxes) {
+                        float tBox = 0.0f;
+                        Facing fBox = Facing::Up;
+                        if (rayIntersectAabb(origin, dir, box, maxReachBlocks, tBox, fBox) && tBox < bestT) {
+                            bestT = tBox;
+                            bestFace = fBox;
+                            hitAny = true;
+                        }
+                    }
+
+                    if (hitAny && bestT <= maxReachBlocks) {
+                        result.hasBlockHit = true;
+                        result.hitFace = bestFace;
+                        result.blockPos = cell;
+                        result.hitWorldPos = origin + dir * bestT;
+                        return result;
+                    }
+                }
+            }
+        } else if ((vy < minY && stepY < 0) || (vy > maxY && stepY > 0)) {
+            break;
+        }
+
+        if (tMaxX < tMaxY) {
+            if (tMaxX < tMaxZ) {
+                vx += stepX;
+                tCurrent = tMaxX;
+                tMaxX += tDeltaX;
+            } else {
+                vz += stepZ;
+                tCurrent = tMaxZ;
+                tMaxZ += tDeltaZ;
+            }
+        } else {
+            if (tMaxY < tMaxZ) {
+                vy += stepY;
+                tCurrent = tMaxY;
+                tMaxY += tDeltaY;
+            } else {
+                vz += stepZ;
+                tCurrent = tMaxZ;
+                tMaxZ += tDeltaZ;
+            }
+        }
+    }
+
+    return result;
+}
 
 PlacementPreviewState PlacementResolver::resolve(
     const PlayerContextInput& ctx,
