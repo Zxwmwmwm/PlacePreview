@@ -10,6 +10,7 @@ namespace placepreview {
 namespace {
 
 constexpr float kSurfaceExpand = 0.0028f;
+constexpr float kEdgeDepthBias = 0.0022f;
 constexpr float kGuideLift = 0.0065f;
 constexpr float kCoplanarEps = 1.5e-3f;
 
@@ -56,15 +57,83 @@ uint32_t scalePackedAbgrAlpha(uint32_t abgr, float alphaFactor) noexcept {
     return rgb | (newA << 24u);
 }
 
-void pushLine(
+struct DeferredLineSegment {
+    Vec3 aWorld{};
+    Vec3 bWorld{};
+    uint32_t abgr{0};
+};
+
+// Emits a crisp, constant-apparent-pixel-width 3D camera-facing ribbon into `packedTriangles`
+// so `DebugRenderer::renderEnd` renders EVERY wireframe edge through `"entity_alphablend"`
+// (full hardware SrcAlpha / OneMinusSrcAlpha blending!) rather than `"debug"` (opaque unblended).
+void emitCameraFacingLineRibbon(
     GhostMeshOutput& out,
     const Vec3& camPos,
     const Vec3& aWorld,
     const Vec3& bWorld,
     uint32_t abgr) {
 
-    out.packedLines.push_back(PackedVertex{aWorld.x, aWorld.y, aWorld.z, abgr});
-    out.packedLines.push_back(PackedVertex{bWorld.x, bWorld.y, bWorld.z, abgr});
+    const Vec3 delta = bWorld - aWorld;
+    const float segLen = delta.length();
+    if (segLen <= 1e-5f) {
+        return;
+    }
+
+    const Vec3 tangent = delta * (1.0f / segLen);
+    const Vec3 mid = (aWorld + bWorld) * 0.5f;
+    const Vec3 toCam = camPos - mid;
+    const float camDist = std::max(0.35f, toCam.length());
+    const Vec3 viewDir = toCam * (1.0f / camDist);
+
+    // ~2.2 screen pixels full width at 70-deg FOV on 720p/1080p Android screens at EVERY distance:
+    const float halfW = std::clamp(0.0021f * camDist, 0.0014f, 0.025f);
+
+    Vec3 side = tangent.cross(viewDir);
+    const float sideLen = side.length();
+    if (sideLen > 1e-5f) {
+        side = side * (halfW / sideLen);
+    } else {
+        const Vec3 fallbackUp = (std::fabs(tangent.y) < 0.9f) ? Vec3{0.0f, 1.0f, 0.0f} : Vec3{1.0f, 0.0f, 0.0f};
+        side = tangent.cross(fallbackUp).normalizedOr(Vec3{1.0f, 0.0f, 0.0f}) * halfW;
+    }
+
+    // Extend endpoints by +/-halfW so 90-degree corners join flush with zero corner gap,
+    // and bias slightly toward the camera so edges render cleanly in front of coplanar faces.
+    const Vec3 bias = viewDir * kEdgeDepthBias;
+    const Vec3 aExt = aWorld - tangent * halfW + bias;
+    const Vec3 bExt = bWorld + tangent * halfW + bias;
+
+    const Vec3 p0 = aExt - side;
+    const Vec3 p1 = bExt - side;
+    const Vec3 p2 = bExt + side;
+    const Vec3 p3 = aExt + side;
+
+    out.packedTriangles.push_back(PackedVertex{p0.x, p0.y, p0.z, abgr});
+    out.packedTriangles.push_back(PackedVertex{p1.x, p1.y, p1.z, abgr});
+    out.packedTriangles.push_back(PackedVertex{p2.x, p2.y, p2.z, abgr});
+
+    out.packedTriangles.push_back(PackedVertex{p0.x, p0.y, p0.z, abgr});
+    out.packedTriangles.push_back(PackedVertex{p2.x, p2.y, p2.z, abgr});
+    out.packedTriangles.push_back(PackedVertex{p3.x, p3.y, p3.z, abgr});
+
+    out.packedTriangles.push_back(PackedVertex{p0.x, p0.y, p0.z, abgr});
+    out.packedTriangles.push_back(PackedVertex{p2.x, p2.y, p2.z, abgr});
+    out.packedTriangles.push_back(PackedVertex{p1.x, p1.y, p1.z, abgr});
+
+    out.packedTriangles.push_back(PackedVertex{p0.x, p0.y, p0.z, abgr});
+    out.packedTriangles.push_back(PackedVertex{p3.x, p3.y, p3.z, abgr});
+    out.packedTriangles.push_back(PackedVertex{p2.x, p2.y, p2.z, abgr});
+}
+
+void queueLine(
+    GhostMeshOutput& out,
+    std::vector<DeferredLineSegment>& deferredRibbons,
+    const Vec3& camPos,
+    const Vec3& aWorld,
+    const Vec3& bWorld,
+    uint32_t abgr) {
+
+    deferredRibbons.push_back(DeferredLineSegment{aWorld, bWorld, abgr});
 
     const Vec3 a = aWorld - camPos;
     const Vec3 b = bWorld - camPos;
@@ -198,6 +267,7 @@ struct EmittedEdge {
 
 void pushLineDedup(
     GhostMeshOutput& out,
+    std::vector<DeferredLineSegment>& deferredRibbons,
     const Vec3& camPos,
     std::vector<EmittedEdge>& emittedEdges,
     const Vec3& aWorld,
@@ -213,7 +283,7 @@ void pushLineDedup(
         }
     }
     emittedEdges.push_back(EmittedEdge{aWorld, bWorld});
-    pushLine(out, camPos, aWorld, bWorld, abgr);
+    queueLine(out, deferredRibbons, camPos, aWorld, bWorld, abgr);
 }
 
 bool faceVisibleFromCamera(const AABB& b, Facing f, const Vec3& camPos) noexcept {
@@ -223,7 +293,7 @@ bool faceVisibleFromCamera(const AABB& b, Facing f, const Vec3& camPos) noexcept
         case Facing::South: return camPos.z > b.max.z - 1e-3f;
         case Facing::North: return camPos.z < b.min.z + 1e-3f;
         case Facing::East:  return camPos.x > b.max.x - 1e-3f;
-        case Facing::West:  return camPos.x < b.min.x + 1e-3f;
+        case Facing::West:  return camPos.x < b.min.x - 1e-3f;
     }
     return true;
 }
@@ -243,8 +313,6 @@ float faceLightFactor(Facing f, bool directionalShading) noexcept {
 
 float normalLightFactor(const Vec3& worldNormal, bool directionalShading) noexcept {
     if (!directionalShading) return 1.0f;
-    // Matches vanilla Minecraft directional lighting cleanly across any 3D angle:
-    // +Y = 1.00, +/-Z = 0.86, +/-X = 0.73, -Y = 0.60.
     const float ny = worldNormal.y;
     const float horizontal = (ny >= 0.0f)
                                  ? (0.86f * worldNormal.z * worldNormal.z +
@@ -258,6 +326,7 @@ float normalLightFactor(const Vec3& worldNormal, bool directionalShading) noexce
 
 void emitOrientedBox(
     GhostMeshOutput& out,
+    std::vector<DeferredLineSegment>& deferredRibbons,
     const Vec3& camPos,
     std::vector<EmittedEdge>& emittedEdges,
     const OrientedBox& obb,
@@ -285,19 +354,12 @@ void emitOrientedBox(
         Vec3 c3;
     };
 
-    // All 6 faces wound right-handed so (c1 - c0) x (c2 - c0) points along `normal`:
     const std::array<ObbFaceDesc, 6> faces{{
-        // +V (top)
         {obb.axisV,          C - U + V - W, C - U + V + W, C + U + V + W, C + U + V - W},
-        // -V (bottom)
         {obb.axisV * -1.0f,  C - U - V - W, C + U - V - W, C + U - V + W, C - U - V + W},
-        // +W (back)
         {obb.axisW,          C - U - V + W, C + U - V + W, C + U + V + W, C - U + V + W},
-        // -W (front — faces player on 16-angle signs/banners/skulls!)
         {obb.axisW * -1.0f,  C - U + V - W, C + U + V - W, C + U - V - W, C - U - V - W},
-        // +U (right)
         {obb.axisU,          C + U - V + W, C + U - V - W, C + U + V - W, C + U + V + W},
-        // -U (left)
         {obb.axisU * -1.0f,  C - U - V - W, C - U - V + W, C - U + V + W, C - U + V - W}
     }};
 
@@ -327,16 +389,17 @@ void emitOrientedBox(
             pushQuadTwoSided(out, camPos, faces[i].c0, faces[i].c1, faces[i].c2, faces[i].c3, fillAbgr);
         }
         if (emitWire) {
-            pushLineDedup(out, camPos, emittedEdges, faces[i].c0, faces[i].c1, wireAbgr);
-            pushLineDedup(out, camPos, emittedEdges, faces[i].c1, faces[i].c2, wireAbgr);
-            pushLineDedup(out, camPos, emittedEdges, faces[i].c2, faces[i].c3, wireAbgr);
-            pushLineDedup(out, camPos, emittedEdges, faces[i].c3, faces[i].c0, wireAbgr);
+            pushLineDedup(out, deferredRibbons, camPos, emittedEdges, faces[i].c0, faces[i].c1, wireAbgr);
+            pushLineDedup(out, deferredRibbons, camPos, emittedEdges, faces[i].c1, faces[i].c2, wireAbgr);
+            pushLineDedup(out, deferredRibbons, camPos, emittedEdges, faces[i].c2, faces[i].c3, wireAbgr);
+            pushLineDedup(out, deferredRibbons, camPos, emittedEdges, faces[i].c3, faces[i].c0, wireAbgr);
         }
     }
 }
 
 void emitFaceRectQuad(
     GhostMeshOutput& out,
+    std::vector<DeferredLineSegment>& deferredRibbons,
     const Vec3& camPos,
     std::vector<EmittedEdge>& emittedEdges,
     Facing f,
@@ -393,10 +456,10 @@ void emitFaceRectQuad(
         pushQuadTwoSided(out, camPos, c0, c1, c2, c3, fillAbgr);
     }
     if (emitWire) {
-        pushLineDedup(out, camPos, emittedEdges, c0, c1, wireAbgr);
-        pushLineDedup(out, camPos, emittedEdges, c1, c2, wireAbgr);
-        pushLineDedup(out, camPos, emittedEdges, c2, c3, wireAbgr);
-        pushLineDedup(out, camPos, emittedEdges, c3, c0, wireAbgr);
+        pushLineDedup(out, deferredRibbons, camPos, emittedEdges, c0, c1, wireAbgr);
+        pushLineDedup(out, deferredRibbons, camPos, emittedEdges, c1, c2, wireAbgr);
+        pushLineDedup(out, deferredRibbons, camPos, emittedEdges, c2, c3, wireAbgr);
+        pushLineDedup(out, deferredRibbons, camPos, emittedEdges, c3, c0, wireAbgr);
     }
 }
 
@@ -434,6 +497,7 @@ Vec3 facePointUV(const AABB& bounds, Facing f, float u, float v, float lift = kG
 
 void emitPillarOrientationGuides(
     GhostMeshOutput& out,
+    std::vector<DeferredLineSegment>& deferredRibbons,
     const Vec3& camPos,
     const AABB& bounds,
     int pillarAxis,
@@ -453,7 +517,7 @@ void emitPillarOrientationGuides(
                 const float a1 = static_cast<float>(s + 1) * (kTwoPi / static_cast<float>(kSegs));
                 const Vec3 p0 = facePointUV(bounds, cap, 0.5f + radius * std::cos(a0), 0.5f + radius * std::sin(a0));
                 const Vec3 p1 = facePointUV(bounds, cap, 0.5f + radius * std::cos(a1), 0.5f + radius * std::sin(a1));
-                pushLine(out, camPos, p0, p1, accentLineAbgr);
+                queueLine(out, deferredRibbons, camPos, p0, p1, accentLineAbgr);
             }
         }
     }
@@ -481,28 +545,32 @@ void emitPillarOrientationGuides(
                     b = facePointUV(bounds, side, 0.90f, t);
                 }
             }
-            pushLine(out, camPos, a, b, secondaryLineAbgr);
+            queueLine(out, deferredRibbons, camPos, a, b, secondaryLineAbgr);
         }
     }
 }
 
 void emitSixWayOrientationGuides(
     GhostMeshOutput& out,
+    std::vector<DeferredLineSegment>& deferredRibbons,
     const Vec3& camPos,
     const AABB& bounds,
     Facing activeFace,
     uint32_t accentLineAbgr,
     uint32_t accentFillAbgr,
-    bool emitFill) {
+    bool emitFill,
+    bool emitWire) {
 
-    const Vec3 b0 = facePointUV(bounds, activeFace, 0.22f, 0.22f);
-    const Vec3 b1 = facePointUV(bounds, activeFace, 0.78f, 0.22f);
-    const Vec3 b2 = facePointUV(bounds, activeFace, 0.78f, 0.78f);
-    const Vec3 b3 = facePointUV(bounds, activeFace, 0.22f, 0.78f);
-    pushLine(out, camPos, b0, b1, accentLineAbgr);
-    pushLine(out, camPos, b1, b2, accentLineAbgr);
-    pushLine(out, camPos, b2, b3, accentLineAbgr);
-    pushLine(out, camPos, b3, b0, accentLineAbgr);
+    if (emitWire) {
+        const Vec3 b0 = facePointUV(bounds, activeFace, 0.22f, 0.22f);
+        const Vec3 b1 = facePointUV(bounds, activeFace, 0.78f, 0.22f);
+        const Vec3 b2 = facePointUV(bounds, activeFace, 0.78f, 0.78f);
+        const Vec3 b3 = facePointUV(bounds, activeFace, 0.22f, 0.78f);
+        queueLine(out, deferredRibbons, camPos, b0, b1, accentLineAbgr);
+        queueLine(out, deferredRibbons, camPos, b1, b2, accentLineAbgr);
+        queueLine(out, deferredRibbons, camPos, b2, b3, accentLineAbgr);
+        queueLine(out, deferredRibbons, camPos, b3, b0, accentLineAbgr);
+    }
 
     if (emitFill) {
         const Vec3 i0 = facePointUV(bounds, activeFace, 0.34f, 0.34f);
@@ -512,27 +580,31 @@ void emitSixWayOrientationGuides(
         pushQuadTwoSided(out, camPos, i0, i1, i2, i3, accentFillAbgr);
     }
 
-    const Vec3 center = bounds.center();
-    const Vec3 dir = facingNormal(activeFace);
-    const float halfSpan = 0.36f * std::min({
-        std::max(bounds.sizeX(), 0.25f),
-        std::max(bounds.sizeY(), 0.25f),
-        std::max(bounds.sizeZ(), 0.25f)
-    });
-    const Vec3 tail = center - dir * halfSpan;
-    const Vec3 tip = facePointUV(bounds, activeFace, 0.50f, 0.50f, 0.045f);
-    pushLine(out, camPos, tail, tip, accentLineAbgr);
+    if (emitWire) {
+        const Vec3 center = bounds.center();
+        const Vec3 dir = facingNormal(activeFace);
+        const float halfSpan = 0.36f * std::min({
+            std::max(bounds.sizeX(), 0.25f),
+            std::max(bounds.sizeY(), 0.25f),
+            std::max(bounds.sizeZ(), 0.25f)
+        });
+        const Vec3 tail = center - dir * halfSpan;
+        const Vec3 tip = facePointUV(bounds, activeFace, 0.50f, 0.50f, 0.045f);
+        queueLine(out, deferredRibbons, camPos, tail, tip, accentLineAbgr);
+    }
 }
 
 void emitHorizontalOrientationGuides(
     GhostMeshOutput& out,
+    std::vector<DeferredLineSegment>& deferredRibbons,
     const Vec3& camPos,
     const AABB& bounds,
     Facing frontFace,
     bool topHalf,
     uint32_t accentLineAbgr,
     uint32_t accentFillAbgr,
-    bool emitFill) {
+    bool emitFill,
+    bool emitWire) {
 
     if (frontFace == Facing::Up || frontFace == Facing::Down) {
         return;
@@ -564,10 +636,22 @@ void emitHorizontalOrientationGuides(
             break;
     }
 
-    pushLine(out, camPos, leftWing, tip, accentLineAbgr);
-    pushLine(out, camPos, rightWing, tip, accentLineAbgr);
+    if (emitWire) {
+        queueLine(out, deferredRibbons, camPos, leftWing, tip, accentLineAbgr);
+        queueLine(out, deferredRibbons, camPos, rightWing, tip, accentLineAbgr);
+    }
     if (emitFill) {
         pushTriTwoSided(out, camPos, leftWing, tip, rightWing, accentFillAbgr);
+    }
+}
+
+void flushDeferredRibbons(
+    GhostMeshOutput& out,
+    const std::vector<DeferredLineSegment>& deferredRibbons,
+    const Vec3& camPos) {
+
+    for (const auto& seg : deferredRibbons) {
+        emitCameraFacingLineRibbon(out, camPos, seg.aWorld, seg.bWorld, seg.abgr);
     }
 }
 
@@ -595,12 +679,16 @@ void GhostMesher::buildMesh(
         return;
     }
 
-    const bool emitFill = (cfg.renderMode != "Wireframe Only");
-    const bool emitWire = (cfg.renderMode != "Translucent Fill");
+    const float fillAlpha = std::clamp(cfg.fillOpacity * pulseFactor * vis, 0.0f, 1.0f);
+    const float wireAlpha = std::clamp(cfg.wireframeOpacity * (0.94f + 0.06f * pulseFactor) * vis, 0.0f, 1.0f);
+
+    const bool emitFill = (cfg.renderMode != "Wireframe Only") && (fillAlpha > 0.004f);
+    const bool emitWire = (cfg.renderMode != "Translucent Fill") && (wireAlpha > 0.004f);
+    if (!emitFill && !emitWire) {
+        return;
+    }
 
     const RgbaColor baseRgb = cfg.resolveBaseColor(preview.materialColor);
-    const float fillAlpha = std::clamp(cfg.fillOpacity * pulseFactor * vis, 0.01f, 0.90f);
-    const float wireAlpha = std::clamp(cfg.wireframeOpacity * (0.94f + 0.06f * pulseFactor) * vis, 0.02f, 1.00f);
 
     static constexpr std::array<Facing, 6> kAllFaces{
         Facing::Down, Facing::Up, Facing::North, Facing::South, Facing::West, Facing::East
@@ -611,11 +699,12 @@ void GhostMesher::buildMesh(
                                       : preview.worldBoxes.size();
     outMesh.triangles.reserve(partCount * 28);
     outMesh.lines.reserve(partCount * 32 + 32);
-    outMesh.packedTriangles.reserve(partCount * 84);
-    outMesh.packedLines.reserve(partCount * 64 + 64);
+    outMesh.packedTriangles.reserve(partCount * 260 + 128);
 
     std::vector<EmittedEdge> emittedEdges;
     emittedEdges.reserve(partCount * 12 + 8);
+    std::vector<DeferredLineSegment> deferredRibbons;
+    deferredRibbons.reserve(partCount * 16 + 32);
 
     // 1A. True 3D Oriented Box path (16-angle standing signs, hanging signs, banners, skulls,
     //     angled wall torches, slanted lecterns, and smooth rotated animations!)
@@ -623,6 +712,7 @@ void GhostMesher::buildMesh(
         for (const auto& obb : preview.orientedBoxes) {
             emitOrientedBox(
                 outMesh,
+                deferredRibbons,
                 cameraWorldPos,
                 emittedEdges,
                 obb,
@@ -633,6 +723,7 @@ void GhostMesher::buildMesh(
                 emitFill,
                 emitWire);
         }
+        flushDeferredRibbons(outMesh, deferredRibbons, cameraWorldPos);
         return;
     }
 
@@ -694,6 +785,7 @@ void GhostMesher::buildMesh(
                 if (!r.empty()) {
                     emitFaceRectQuad(
                         outMesh,
+                        deferredRibbons,
                         cameraWorldPos,
                         emittedEdges,
                         face,
@@ -715,6 +807,7 @@ void GhostMesher::buildMesh(
             if (faceVisibleFromCamera(preview.mergeOutlineBox, f, cameraWorldPos)) {
                 emitFaceRectQuad(
                     outMesh,
+                    deferredRibbons,
                     cameraWorldPos,
                     emittedEdges,
                     f,
@@ -743,21 +836,23 @@ void GhostMesher::buildMesh(
 
         switch (preview.orientationKind) {
             case OrientationKind::PillarAxis:
-                emitPillarOrientationGuides(
-                    outMesh, cameraWorldPos, bounds, preview.pillarAxis,
-                    guideBright.packAbgr(), guideSoft.packAbgr());
+                if (emitWire) {
+                    emitPillarOrientationGuides(
+                        outMesh, deferredRibbons, cameraWorldPos, bounds, preview.pillarAxis,
+                        guideBright.packAbgr(), guideSoft.packAbgr());
+                }
                 break;
 
             case OrientationKind::SixWay:
                 emitSixWayOrientationGuides(
-                    outMesh, cameraWorldPos, bounds, preview.facing,
-                    guideBright.packAbgr(), guideFill.packAbgr(), emitFill);
+                    outMesh, deferredRibbons, cameraWorldPos, bounds, preview.facing,
+                    guideBright.packAbgr(), guideFill.packAbgr(), emitFill, emitWire);
                 break;
 
             case OrientationKind::Horizontal:
                 emitHorizontalOrientationGuides(
-                    outMesh, cameraWorldPos, bounds, preview.facing, preview.topHalf,
-                    guideBright.packAbgr(), guideFill.packAbgr(), emitFill);
+                    outMesh, deferredRibbons, cameraWorldPos, bounds, preview.facing, preview.topHalf,
+                    guideBright.packAbgr(), guideFill.packAbgr(), emitFill, emitWire);
                 break;
 
             case OrientationKind::SlabHalf:
@@ -766,6 +861,10 @@ void GhostMesher::buildMesh(
                 break;
         }
     }
+
+    // Emit all alpha-blended 3D outline ribbons AFTER fill faces in `packedTriangles`
+    // so `DebugRenderer::renderEnd` draws them through `"entity_alphablend"` on top of the faces!
+    flushDeferredRibbons(outMesh, deferredRibbons, cameraWorldPos);
 }
 
 } // namespace placepreview

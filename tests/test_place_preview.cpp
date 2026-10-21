@@ -486,7 +486,158 @@ void testSlabMergeAndDebugRendererSwapPass() {
         fakeParams,
         [](void*, void*) { ++sCalls; },
         mesh);
-    assert(sCalls == 2);
+    // Single-pass `"entity_alphablend"` submission (`packedTriangles` contains fill faces first,
+    // alpha-blended 3D outline ribbons second, and zero unblended `"debug"` `packedLines`)!
+    assert(mesh.packedLines.empty());
+    assert(!mesh.packedTriangles.empty());
+    assert(sCalls == 1);
+}
+
+void testSchemaV2PresetsRenderStylesMaterialAdaptiveAndOutlineOpacity() {
+    auto& mgr = ConfigManager::instance();
+    mgr.resetDefaults();
+
+    FakeWorld world;
+    world.setBlock(0, 63, 2, "minecraft:stone");
+
+    auto makePreview = [&](const char* itemId, const char* blockId) {
+        PlayerContextInput ctx{};
+        ctx.inWorld = true;
+        ctx.mainhand = HeldItemInput{true, 64, 0, itemId, blockId, 0};
+        ctx.raycast.hasBlockHit = true;
+        ctx.raycast.blockPos = {0, 63, 2};
+        ctx.raycast.hitFace = Facing::Up;
+        ctx.raycast.hitWorldPos = {0.5f, 64.0f, 2.5f};
+        return PlacementResolver::resolve(ctx, world, mgr.snapshot());
+    };
+
+    const Vec3 cam{0.5f, 65.8f, 0.2f};
+
+    // 1. Verify ALL 6 Quick Presets + transitions between Crisp Wireframe <-> Translucent Fill <-> Shaded + Wireframe:
+    for (const char* preset : {
+             "Frosted White",
+             "Classic Cyan",
+             "Material Adaptive",
+             "Crisp Wireframe",
+             "Subtle Minimal",
+             "High Contrast"}) {
+        mgr.applyKeyValue("preset", preset);
+        const ModConfig snap = mgr.snapshot();
+        assert(snap.preset == preset);
+        const PlacementPreviewState st = makePreview("minecraft:oak_planks", "minecraft:oak_planks");
+        GhostMeshOutput mesh{};
+        GhostMesher::buildMesh(st, snap, cam, 0.0f, mesh);
+        assert(!mesh.empty());
+        assert(mesh.packedLines.empty());
+        if (std::string_view(preset) == "Crisp Wireframe") {
+            assert(snap.renderMode == "Wireframe Only");
+            assert(mesh.triangles.empty());
+            assert(!mesh.lines.empty());
+            assert(!mesh.packedTriangles.empty()); // ribbon quads in `entity_alphablend`!
+        } else {
+            assert(!mesh.triangles.empty());
+            assert(!mesh.lines.empty());
+        }
+    }
+
+    // Switching straight from Crisp Wireframe -> Translucent Fill -> Wireframe Only -> Shaded + Wireframe:
+    mgr.applyKeyValue("preset", "Crisp Wireframe");
+    mgr.applyKeyValue("renderMode", "Translucent Fill");
+    {
+        const ModConfig snap = mgr.snapshot();
+        assert(snap.renderMode == "Translucent Fill");
+        assert(snap.fillOpacity >= 0.05f);
+        GhostMeshOutput mesh{};
+        GhostMesher::buildMesh(makePreview("minecraft:oak_planks", "minecraft:oak_planks"), snap, cam, 0.0f, mesh);
+        assert(!mesh.triangles.empty());
+        assert(mesh.lines.empty());
+        assert(mesh.packedTriangles.size() == mesh.triangles.size() * 3);
+    }
+
+    mgr.applyKeyValue("renderMode", "Wireframe Only");
+    {
+        const ModConfig snap = mgr.snapshot();
+        assert(snap.renderMode == "Wireframe Only");
+        GhostMeshOutput mesh{};
+        GhostMesher::buildMesh(makePreview("minecraft:oak_planks", "minecraft:oak_planks"), snap, cam, 0.0f, mesh);
+        assert(mesh.triangles.empty());
+        assert(!mesh.lines.empty());
+        assert(mesh.packedTriangles.size() == mesh.lines.size() * 12);
+    }
+
+    mgr.applyKeyValue("renderMode", "Shaded + Wireframe");
+    {
+        const ModConfig snap = mgr.snapshot();
+        assert(snap.renderMode == "Shaded + Wireframe");
+        GhostMeshOutput mesh{};
+        GhostMesher::buildMesh(makePreview("minecraft:oak_planks", "minecraft:oak_planks"), snap, cam, 0.0f, mesh);
+        assert(!mesh.triangles.empty());
+        assert(!mesh.lines.empty());
+        assert(mesh.packedTriangles.size() == mesh.triangles.size() * 3 + mesh.lines.size() * 12);
+    }
+
+    // 2. Verify Material Adaptive produces distinct, accurate per-material colors on GPU vertices:
+    mgr.applyKeyValue("colorMode", "Material Adaptive");
+    assert(mgr.snapshot().colorMode == "Material Adaptive");
+    {
+        const auto oak = makePreview("minecraft:oak_planks", "minecraft:oak_planks");
+        const auto redWool = makePreview("minecraft:red_wool", "minecraft:red_wool");
+        const auto dirt = makePreview("minecraft:dirt", "minecraft:dirt");
+        const auto pickle = makePreview("minecraft:sea_pickle", "minecraft:sea_pickle");
+        const auto soul = makePreview("minecraft:soul_lantern", "minecraft:soul_lantern");
+        const auto frame = makePreview("minecraft:item_frame", "");
+
+        assert(oak.materialColor.r > oak.materialColor.b);
+        assert(redWool.materialColor.r > 180 && redWool.materialColor.g < 90);
+        assert(dirt.materialColor.r > dirt.materialColor.b);
+        assert(pickle.materialColor.g > pickle.materialColor.b);
+        assert(soul.materialColor.b > soul.materialColor.r);
+        (void)frame;
+
+        GhostMeshOutput oakMesh{}, redMesh{};
+        GhostMesher::buildMesh(oak, mgr.snapshot(), cam, 0.0f, oakMesh);
+        GhostMesher::buildMesh(redWool, mgr.snapshot(), cam, 0.0f, redMesh);
+        assert((oakMesh.packedTriangles.front().abgr & 0x00FFFFFFu) !=
+               (redMesh.packedTriangles.front().abgr & 0x00FFFFFFu));
+    }
+
+    // 3. Verify Outline Opacity (`wireframeOpacity`) strictly modulates actual hardware GPU alpha
+    //    bytes on the emitted `"entity_alphablend"` ribbon vertices across 0.00 -> 0.25 -> 0.70 -> 1.00!
+    mgr.applyKeyValue("preset", "Crisp Wireframe");
+    const auto cube = makePreview("minecraft:stone", "minecraft:stone");
+
+    mgr.applyKeyValue("wireframeOpacity", "0.00");
+    {
+        GhostMeshOutput m0{};
+        GhostMesher::buildMesh(cube, mgr.snapshot(), cam, 0.0f, m0);
+        assert(m0.packedTriangles.empty());
+    }
+
+    uint32_t alpha25 = 0, alpha70 = 0, alpha100 = 0;
+    mgr.applyKeyValue("wireframeOpacity", "0.25");
+    {
+        GhostMeshOutput m25{};
+        GhostMesher::buildMesh(cube, mgr.snapshot(), cam, 0.0f, m25);
+        assert(!m25.packedTriangles.empty());
+        alpha25 = (m25.packedTriangles.back().abgr >> 24u) & 0xFFu;
+    }
+    mgr.applyKeyValue("wireframeOpacity", "0.70");
+    {
+        GhostMeshOutput m70{};
+        GhostMesher::buildMesh(cube, mgr.snapshot(), cam, 0.0f, m70);
+        alpha70 = (m70.packedTriangles.back().abgr >> 24u) & 0xFFu;
+    }
+    mgr.applyKeyValue("wireframeOpacity", "1.00");
+    {
+        GhostMeshOutput m100{};
+        GhostMesher::buildMesh(cube, mgr.snapshot(), cam, 0.0f, m100);
+        alpha100 = (m100.packedTriangles.back().abgr >> 24u) & 0xFFu;
+    }
+    assert(alpha25 >= 55u && alpha25 <= 72u);
+    assert(alpha70 > alpha25 + 80u);
+    assert(alpha100 == 255u && alpha100 > alpha70);
+
+    mgr.resetDefaults();
 }
 
 } // namespace
@@ -498,6 +649,7 @@ int main() {
     testSmoothHotbarBlockSwitchMorphing();
     testNonPlaceableItemsNeverPreview();
     testSlabMergeAndDebugRendererSwapPass();
+    testSchemaV2PresetsRenderStylesMaterialAdaptiveAndOutlineOpacity();
     std::cout << "All Place Preview unit & sanitizer tests passed!\n";
     return 0;
 }

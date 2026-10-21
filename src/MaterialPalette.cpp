@@ -13,6 +13,10 @@ bool containsToken(std::string_view haystack, std::string_view needle) noexcept 
     return haystack.find(needle) != std::string_view::npos;
 }
 
+bool startsWithToken(std::string_view haystack, std::string_view prefix) noexcept {
+    return haystack.size() >= prefix.size() && haystack.substr(0, prefix.size()) == prefix;
+}
+
 std::string toLowerAscii(std::string_view sv) {
     std::string out;
     out.reserve(sv.size());
@@ -50,79 +54,170 @@ RgbaColor MaterialPalette::colorForDyeIndex(int auxData) noexcept {
 RgbaColor MaterialPalette::colorForBlock(std::string_view blockIdentifier, int auxData) noexcept {
     const std::string name = toLowerAscii(StateInspector::stripNamespace(blockIdentifier));
     if (name.empty()) {
-        return {92, 224, 255, 255};
+        return {214, 224, 232, 255};
     }
 
     if (name == "bed") {
         return colorForDyeIndex(auxData);
     }
 
+    // 1. Explicit 16-color dyed blocks (wool, carpet, concrete, terracotta, stained glass, shulker, banner, candle)
     if (containsToken(name, "light_blue")) return {92, 188, 238, 255};
-    if (containsToken(name, "light_gray") || containsToken(name, "silver_")) return {172, 174, 170, 255};
+    if (containsToken(name, "light_gray") || startsWithToken(name, "silver_")) return {172, 174, 170, 255};
+    if (startsWithToken(name, "orange_") || containsToken(name, "_orange")) return {240, 134, 48, 255};
     if (containsToken(name, "magenta")) return {204, 88, 198, 255};
-    if (containsToken(name, "pink") || containsToken(name, "cherry")) return {238, 168, 188, 255};
+    if (startsWithToken(name, "yellow_") || containsToken(name, "sponge") || containsToken(name, "ochre_froglight")) {
+        return {246, 206, 62, 255};
+    }
+    if (startsWithToken(name, "lime_") || containsToken(name, "verdant_froglight")) return {130, 212, 56, 255};
+    if (startsWithToken(name, "pink_") || containsToken(name, "pink_petals") ||
+        containsToken(name, "cherry") || containsToken(name, "pearlescent_froglight")) {
+        return {238, 162, 188, 255};
+    }
+    if (startsWithToken(name, "cyan_")) return {46, 172, 184, 255};
+    if (startsWithToken(name, "purple_")) return {146, 72, 204, 255};
+    if (startsWithToken(name, "blue_")) return {68, 96, 202, 255};
+    if (startsWithToken(name, "brown_")) return {142, 94, 58, 255};
+    if (startsWithToken(name, "green_")) return {98, 146, 52, 255};
+    if (startsWithToken(name, "red_") && !containsToken(name, "red_sandstone") && !containsToken(name, "red_sand")) {
+        return {206, 64, 60, 255};
+    }
+    if (startsWithToken(name, "gray_")) return {96, 102, 108, 255};
+    if (startsWithToken(name, "black_") || name == "coal_block") return {64, 66, 74, 255};
+    if (startsWithToken(name, "white_")) return {244, 246, 246, 255};
+
+    // 2. Wood species, signs, frames, armor stands, books, bamboo, Nether stems
     if (containsToken(name, "pale_oak")) return {226, 220, 214, 255};
     if (containsToken(name, "dark_oak") || containsToken(name, "darkoak")) return {112, 82, 54, 255};
-    if (containsToken(name, "spruce")) return {146, 108, 68, 255};
+    if (containsToken(name, "spruce") || name == "podzol") return {146, 108, 68, 255};
     if (containsToken(name, "birch")) return {228, 214, 164, 255};
     if (containsToken(name, "jungle")) return {190, 140, 104, 255};
     if (containsToken(name, "acacia")) return {214, 122, 68, 255};
     if (containsToken(name, "mangrove")) return {166, 78, 70, 255};
-    if (containsToken(name, "bamboo")) return {214, 196, 98, 255};
-    if (containsToken(name, "crimson")) return {168, 72, 108, 255};
+    if (containsToken(name, "bamboo") || containsToken(name, "scaffolding")) return {214, 196, 98, 255};
+    if (containsToken(name, "crimson") || (containsToken(name, "wart_block") && !containsToken(name, "warped"))) {
+        return {168, 72, 108, 255};
+    }
     if (containsToken(name, "warped")) return {54, 176, 164, 255};
+    if (name == "glow_frame" || name == "glow_item_frame") return {112, 228, 196, 255};
+    if (name == "frame" || name == "item_frame" || name == "painting" || name == "armor_stand") {
+        return {188, 142, 88, 255};
+    }
     if (containsToken(name, "oak") || containsToken(name, "planks") || containsToken(name, "wood") ||
         containsToken(name, "log") || containsToken(name, "chest") || containsToken(name, "barrel") ||
         containsToken(name, "lectern") || containsToken(name, "crafting") || containsToken(name, "ladder") ||
-        containsToken(name, "sign")) {
+        containsToken(name, "sign") || containsToken(name, "bookshelf") || containsToken(name, "chiseled_bookshelf") ||
+        containsToken(name, "loom") || containsToken(name, "cartography") || containsToken(name, "fletching") ||
+        containsToken(name, "composter") || containsToken(name, "beehive") || containsToken(name, "bee_nest") ||
+        containsToken(name, "noteblock") || containsToken(name, "jukebox") ||
+        (containsToken(name, "campfire") && !containsToken(name, "soul"))) {
         return {198, 160, 104, 255};
     }
 
-    if (containsToken(name, "oxidized_copper") || containsToken(name, "oxidized_cut_copper")) return {84, 194, 162, 255};
-    if (containsToken(name, "weathered_copper") || containsToken(name, "weathered_cut_copper")) return {112, 180, 138, 255};
-    if (containsToken(name, "exposed_copper") || containsToken(name, "exposed_cut_copper")) return {176, 146, 124, 255};
-    if (containsToken(name, "copper")) return {218, 132, 96, 255};
+    // 3. Copper oxidation & resin / brick / terracotta warmth
+    if (containsToken(name, "oxidized_copper") || containsToken(name, "oxidized_cut_copper") ||
+        containsToken(name, "oxidized_chiseled_copper")) {
+        return {84, 194, 162, 255};
+    }
+    if (containsToken(name, "weathered_copper") || containsToken(name, "weathered_cut_copper") ||
+        containsToken(name, "weathered_chiseled_copper")) {
+        return {112, 180, 138, 255};
+    }
+    if (containsToken(name, "exposed_copper") || containsToken(name, "exposed_cut_copper") ||
+        containsToken(name, "exposed_chiseled_copper")) {
+        return {176, 146, 124, 255};
+    }
+    if (containsToken(name, "copper") || containsToken(name, "lightning_rod")) {
+        return {218, 132, 96, 255};
+    }
+    if (containsToken(name, "resin")) return {236, 118, 52, 255};
 
-    if (containsToken(name, "diamond")) return {94, 236, 232, 255};
+    // 4. Lighting, aquatic, & special blocks
+    if (containsToken(name, "soul_lantern") || containsToken(name, "soul_torch") ||
+        containsToken(name, "soul_campfire")) {
+        return {88, 224, 236, 255};
+    }
+    if (containsToken(name, "lantern") || containsToken(name, "torch") || containsToken(name, "shroomlight") ||
+        containsToken(name, "jack_o_lantern") || name == "candle") {
+        return {250, 198, 86, 255};
+    }
+    if (containsToken(name, "end_rod")) return {240, 230, 242, 255};
+    if (containsToken(name, "sea_pickle")) return {128, 178, 84, 255};
+    if (containsToken(name, "turtle_egg") || containsToken(name, "sniffer_egg")) return {226, 222, 192, 255};
+    if (containsToken(name, "conduit")) return {112, 214, 206, 255};
+    if (containsToken(name, "heavy_core")) return {116, 124, 138, 255};
+    if (containsToken(name, "tube_coral")) return {66, 116, 226, 255};
+    if (containsToken(name, "brain_coral")) return {232, 128, 178, 255};
+    if (containsToken(name, "bubble_coral")) return {176, 72, 206, 255};
+    if (containsToken(name, "fire_coral")) return {218, 66, 62, 255};
+    if (containsToken(name, "horn_coral")) return {238, 214, 72, 255};
+    if (containsToken(name, "sculk")) return {38, 146, 162, 255};
+
+    // 5. Skulls / heads
+    if (containsToken(name, "wither_skeleton") || containsToken(name, "dragon_head")) return {74, 76, 86, 255};
+    if (containsToken(name, "creeper_head") || containsToken(name, "zombie_head")) return {108, 176, 92, 255};
+    if (containsToken(name, "piglin_head")) return {228, 166, 138, 255};
+    if (containsToken(name, "skull") || containsToken(name, "head")) return {226, 224, 214, 255};
+
+    // 6. Gems, metals, & redstone
+    if (containsToken(name, "diamond") || containsToken(name, "beacon")) return {94, 236, 232, 255};
     if (containsToken(name, "emerald") || containsToken(name, "slime")) return {82, 224, 118, 255};
     if (containsToken(name, "gold") || containsToken(name, "honey") || containsToken(name, "glowstone") ||
-        containsToken(name, "hay")) {
+        containsToken(name, "hay") || containsToken(name, "bell")) {
         return {244, 206, 84, 255};
     }
-    if (containsToken(name, "amethyst") || containsToken(name, "purpur")) return {186, 128, 224, 255};
-    if (containsToken(name, "lapis") || containsToken(name, "blue")) return {82, 126, 224, 255};
-    if (containsToken(name, "redstone") || containsToken(name, "tnt") || containsToken(name, "red_nether")) {
-        return {226, 78, 72, 255};
+    if (containsToken(name, "amethyst") || containsToken(name, "purpur") || containsToken(name, "chorus")) {
+        return {186, 128, 224, 255};
     }
-    if (containsToken(name, "prismarine") || containsToken(name, "sea_lantern") || containsToken(name, "cyan")) {
+    if (containsToken(name, "lapis")) return {68, 112, 218, 255};
+    if (containsToken(name, "redstone") || containsToken(name, "tnt") || containsToken(name, "netherrack") ||
+        containsToken(name, "nether_brick")) {
+        return {212, 76, 72, 255};
+    }
+    if (containsToken(name, "prismarine") || containsToken(name, "sea_lantern")) {
         return {98, 204, 196, 255};
     }
-    if (containsToken(name, "quartz") || containsToken(name, "white") || containsToken(name, "snow") ||
-        containsToken(name, "calcite") || containsToken(name, "diorite") || containsToken(name, "bone") ||
-        containsToken(name, "iron")) {
+
+    // 7. Foliage, crops, soil, sand, terracotta, & natural terrain
+    if (containsToken(name, "pumpkin") || containsToken(name, "red_sand") || containsToken(name, "carrot")) {
+        return {222, 126, 56, 255};
+    }
+    if (containsToken(name, "waterlily") || containsToken(name, "leaves") || containsToken(name, "moss") ||
+        containsToken(name, "grass") || containsToken(name, "fern") || containsToken(name, "vine") ||
+        containsToken(name, "kelp") || containsToken(name, "seagrass") || containsToken(name, "cactus") ||
+        containsToken(name, "melon") || containsToken(name, "sugar_cane") || containsToken(name, "sapling") ||
+        containsToken(name, "azalea") || containsToken(name, "dripleaf")) {
+        return {114, 198, 96, 255};
+    }
+    if (containsToken(name, "dirt") || containsToken(name, "mud") || containsToken(name, "farmland") ||
+        containsToken(name, "soul_sand") || containsToken(name, "soul_soil") || containsToken(name, "podzol") ||
+        containsToken(name, "mycelium") || containsToken(name, "flower_pot") || containsToken(name, "decorated_pot")) {
+        return {154, 114, 82, 255};
+    }
+    if (containsToken(name, "quartz") || containsToken(name, "snow") || containsToken(name, "calcite") ||
+        containsToken(name, "diorite") || containsToken(name, "bone") || containsToken(name, "iron")) {
         return {232, 236, 240, 255};
     }
     if (containsToken(name, "sand") || containsToken(name, "end_stone")) return {232, 218, 166, 255};
     if (containsToken(name, "brick") || containsToken(name, "granite") || containsToken(name, "terracotta")) {
         return {192, 116, 96, 255};
     }
-    if (containsToken(name, "waterlily") || containsToken(name, "leaves") || containsToken(name, "moss") ||
-        containsToken(name, "grass") || containsToken(name, "green") || containsToken(name, "lime")) {
-        return {114, 198, 96, 255};
-    }
+    if (containsToken(name, "clay") || containsToken(name, "gravel")) return {164, 168, 178, 255};
     if (containsToken(name, "glass") || containsToken(name, "ice")) return {164, 228, 250, 255};
     if (containsToken(name, "deepslate") || containsToken(name, "blackstone") ||
         containsToken(name, "basalt") || containsToken(name, "obsidian") || containsToken(name, "anvil") ||
-        containsToken(name, "hopper")) {
-        return {124, 130, 142, 255};
+        containsToken(name, "hopper") || containsToken(name, "cauldron") || containsToken(name, "netherite") ||
+        containsToken(name, "ancient_debris")) {
+        return {112, 118, 130, 255};
     }
     if (containsToken(name, "stone") || containsToken(name, "cobble") || containsToken(name, "andesite") ||
-        containsToken(name, "tuff") || containsToken(name, "furnace") || containsToken(name, "observer") ||
-        containsToken(name, "piston") || containsToken(name, "dispenser") || containsToken(name, "dropper")) {
+        containsToken(name, "tuff") || containsToken(name, "furnace") || containsToken(name, "smoker") ||
+        containsToken(name, "blast_furnace") || containsToken(name, "observer") || containsToken(name, "piston") ||
+        containsToken(name, "dispenser") || containsToken(name, "dropper") || containsToken(name, "crafter")) {
         return {168, 174, 182, 255};
     }
 
-    return {92, 224, 255, 255};
+    return {204, 216, 228, 255};
 }
 
 } // namespace placepreview

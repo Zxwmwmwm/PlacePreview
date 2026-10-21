@@ -12,10 +12,11 @@
 namespace placepreview {
 
 struct ModConfig {
-    int schemaVersion{4};
+    int schemaVersion{5};
     bool enabled{true};
 
-    // Visual preset helper (optional via JSON / API)
+    // Quick Preset profile ("Frosted White", "Classic Cyan", "Material Adaptive",
+    // "Crisp Wireframe", "Subtle Minimal", "High Contrast", "Custom")
     std::string preset{"Frosted White"};
 
     // "Shaded + Wireframe", "Wireframe Only", "Translucent Fill"
@@ -24,11 +25,11 @@ struct ModConfig {
     // "Custom Color", "Material Adaptive"
     std::string colorMode{"Custom Color"};
 
-    // Clean translucent fill & crisp outline alpha [0.00..1.00]
+    // True hardware alpha-blended fill & outline opacity [0.00..1.00]
     float fillOpacity{0.34f};
     float wireframeOpacity{0.72f};
 
-    // Native inline A / R / G / B slider + live preview swatch color (#AARRGGBB)
+    // Custom Preview Color (#AARRGGBB)
     int accentRed{255};
     int accentGreen{255};
     int accentBlue{255};

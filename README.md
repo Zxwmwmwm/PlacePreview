@@ -10,8 +10,8 @@ Smooth, accurate real-time 3D block placement preview mod (`preload-native`, `ar
   - Multi-part 3D geometry with coplanar interior seam culling for **item frames & glow item frames**, **paintings**, **sea pickles (`1–4` clusters)**, **turtle eggs (`1–4` clusters)**, **candles (`1–4` clusters)**, **conduits**, **heavy cores**, **end rods & lightning rods**, **stairs** (upright, upside-down, outer & inner corners), **slabs & half-slab merges**, **2-block doors** (exact hinge side), **2-block beds** (legs + pillow + 16 dye colors), **walls / fences / panes / iron bars** (live neighbor connections), **fence gates**, **hoppers**, **anvils**, **cauldrons**, **campfires**, **lanterns**, **pots**, **coral & fans**, and **water-surface blocks**.
 - **Smooth 3D Glide & Held-Block Shape Morphing**:
   - Smoothly glides from block to block AND morphs 3D shapes and rotations continuously whenever switching held items in the hotbar, fading in and out smoothly when aiming at valid surfaces vs open sky.
-- **Inline `A / R / G / B` Color Picker & Persistent Settings**:
-  - Inline Mod Menu `Preview Color` live color preview swatch with direct `A / R / G / B` sliders (`#AARRGGBB`), render style & opacity controls, and automatic disk + session persistence across closing/reopening Mod Menu and restarting the game.
+- **Mod Menu Schema V2, Presets, Adaptive Tinting & True Hardware Opacity**:
+  - Categorized **Schema V2** UI (`Color & Style` and `Motion & Behavior`) featuring one-tap **Quick Presets** (`Frosted White`, `Classic Cyan`, `Material Adaptive`, `Crisp Wireframe`, `Subtle Minimal`, `High Contrast`), **Render Style** (`Shaded + Wireframe`, `Wireframe Only`, `Translucent Fill`), **Material Adaptive** block color matching, **Preview Color** (`#AARRGGBB`), and independent hardware alpha-blended **Fill Opacity** & **Outline Opacity** (`0.00–1.00`) that persist reliably across menu sessions and game restarts.
 - **60–120 FPS Center-Crosshair Tracking Across All Gamemodes**:
   - Works seamlessly on both Android Touch Mode and Split Controls across Creative (`11.5m`), Survival (`5.5m`), and Adventure (`5.5m`), hiding cleanly in Spectator mode.
 

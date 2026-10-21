@@ -5,6 +5,7 @@
 
 #include <pl/Logger.hpp>
 #include <pl/ModMenu.hpp>
+#include <pl/ModMenuConfig.hpp>
 
 #include <cstdio>
 #include <string>
@@ -23,11 +24,228 @@ pl::log::Logger& uiLog() {
 std::string fmtFloat(float v) {
     char buf[32]{};
     std::snprintf(buf, sizeof(buf), "%.2f", static_cast<double>(v));
-    return buf;
+    return std::string(buf);
 }
 
 std::string boolStr(bool v) {
     return v ? "true" : "false";
+}
+
+std::string buildSchemaJson(const ModConfig& cfg) {
+    const ModConfig def{};
+
+    pl::modmenu::ConfigSchemaBuilder builder;
+    builder
+        .defaultCategory("color")
+        .category(
+            "color",
+            "Color & Style",
+            "Quick presets, render style, custom color picker, adaptive block tinting, and independent fill/outline opacity.")
+        .category(
+            "motion",
+            "Motion & Behavior",
+            "Smooth 3D glide & item-switch morph speed, surface shading, directional cues, and behavior.");
+
+    builder.node({
+        .id = "preset",
+        .key = "preset",
+        .category = "color",
+        .title = "Quick Preset",
+        .description = "Apply a curated render style, color, and opacity profile with one tap.",
+        .section = "Presets & Style",
+        .type = pl::modmenu::ConfigControlTypeV2::Choice,
+        .choiceStyle = pl::modmenu::ConfigChoiceStyleV2::Chips,
+        .defaultValue = def.preset,
+        .currentValue = cfg.preset,
+        .hasCurrentValue = true,
+        .options = {
+            {"Frosted White", "Frosted White", "Clean bright white shaded fill + crisp outline"},
+            {"Classic Cyan", "Classic Cyan", "Translucent cyan preview with bright edges"},
+            {"Material Adaptive", "Material Adaptive", "Automatically tints to match wood, stone, copper, wool, or glass"},
+            {"Crisp Wireframe", "Crisp Wireframe", "Pure clean 3D block outline with zero fill"},
+            {"Subtle Minimal", "Subtle Minimal", "Soft low-opacity fill and outline"},
+            {"High Contrast", "High Contrast", "Vivid golden-amber preview for bright biomes"},
+            {"Custom", "Custom", "User-customized style, color, and opacity settings"},
+        },
+    });
+
+    builder.node({
+        .id = "renderMode",
+        .key = "renderMode",
+        .category = "color",
+        .title = "Render Style",
+        .description = "Choose shaded 3D fill + crisp wireframe, pure wireframe, or translucent fill.",
+        .section = "Presets & Style",
+        .type = pl::modmenu::ConfigControlTypeV2::Choice,
+        .choiceStyle = pl::modmenu::ConfigChoiceStyleV2::Segmented,
+        .defaultValue = def.renderMode,
+        .currentValue = cfg.renderMode,
+        .hasCurrentValue = true,
+        .options = {
+            {"Shaded + Wireframe", "Shaded + Wireframe", "Translucent shaded 3D faces with crisp edges"},
+            {"Wireframe Only", "Wireframe Only", "Clean outer 3D block outline only"},
+            {"Translucent Fill", "Translucent Fill", "Shaded translucent 3D faces without edge lines"},
+        },
+    });
+
+    builder.node({
+        .id = "colorMode",
+        .key = "colorMode",
+        .category = "color",
+        .title = "Color Source",
+        .description = "Use your chosen Preview Color or automatically tint to match the held block's material.",
+        .section = "Color & Tinting",
+        .type = pl::modmenu::ConfigControlTypeV2::Choice,
+        .choiceStyle = pl::modmenu::ConfigChoiceStyleV2::Segmented,
+        .defaultValue = def.colorMode,
+        .currentValue = cfg.colorMode,
+        .hasCurrentValue = true,
+        .options = {
+            {"Custom Color", "Preview Color", "Use your selected custom Preview Color value"},
+            {"Material Adaptive", "Material Adaptive", "Automatically match held block material color"},
+        },
+    });
+
+    builder.node({
+        .id = "previewColor",
+        .key = "previewColor",
+        .category = "color",
+        .title = "Preview Color",
+        .description = "Pick any custom color & alpha intensity with live preview swatch.",
+        .section = "Color & Tinting",
+        .type = pl::modmenu::ConfigControlTypeV2::Color,
+        .defaultValue = def.previewColorHex(),
+        .currentValue = cfg.previewColorHex(),
+        .hasCurrentValue = true,
+        .colorAlpha = true,
+    });
+
+    builder.node({
+        .id = "fillOpacity",
+        .key = "fillOpacity",
+        .category = "color",
+        .title = "Fill Opacity",
+        .description = "Opacity of translucent 3D block faces (0.00 = hidden, 1.00 = solid).",
+        .section = "Opacity",
+        .type = pl::modmenu::ConfigControlTypeV2::SliderFloat,
+        .defaultValue = fmtFloat(def.fillOpacity),
+        .currentValue = fmtFloat(cfg.fillOpacity),
+        .hasCurrentValue = true,
+        .minValue = "0.00",
+        .maxValue = "1.00",
+        .step = "0.02",
+    });
+
+    builder.node({
+        .id = "wireframeOpacity",
+        .key = "wireframeOpacity",
+        .category = "color",
+        .title = "Outline Opacity",
+        .description = "Opacity of outer 3D block edges (0.00 = hidden, 1.00 = full brightness).",
+        .section = "Opacity",
+        .type = pl::modmenu::ConfigControlTypeV2::SliderFloat,
+        .defaultValue = fmtFloat(def.wireframeOpacity),
+        .currentValue = fmtFloat(cfg.wireframeOpacity),
+        .hasCurrentValue = true,
+        .minValue = "0.00",
+        .maxValue = "1.00",
+        .step = "0.02",
+    });
+
+    builder.node({
+        .id = "smoothAnimation",
+        .key = "smoothAnimation",
+        .category = "motion",
+        .title = "Smooth Block Transition",
+        .description = "Smoothly glide across positions and morph 3D shapes when switching blocks.",
+        .section = "Motion",
+        .type = pl::modmenu::ConfigControlTypeV2::Toggle,
+        .defaultValue = boolStr(def.smoothAnimation),
+        .currentValue = boolStr(cfg.smoothAnimation),
+        .hasCurrentValue = true,
+    });
+
+    builder.node({
+        .id = "animationSpeed",
+        .key = "animationSpeed",
+        .category = "motion",
+        .title = "Transition Speed",
+        .description = "Higher values glide and morph faster; lower values float more gently.",
+        .section = "Motion",
+        .type = pl::modmenu::ConfigControlTypeV2::SliderFloat,
+        .defaultValue = fmtFloat(def.animationSpeed),
+        .currentValue = fmtFloat(cfg.animationSpeed),
+        .hasCurrentValue = true,
+        .minValue = "4.00",
+        .maxValue = "40.00",
+        .step = "1.00",
+        .visibleWhen = {{"smoothAnimation", pl::modmenu::ConfigConditionOpV2::Truthy, "true"}},
+    });
+
+    builder.node({
+        .id = "directionalShading",
+        .key = "directionalShading",
+        .category = "motion",
+        .title = "3D Surface Shading",
+        .description = "Subtle directional face lighting for clear 3D depth perception.",
+        .section = "Appearance",
+        .type = pl::modmenu::ConfigControlTypeV2::Toggle,
+        .defaultValue = boolStr(def.directionalShading),
+        .currentValue = boolStr(cfg.directionalShading),
+        .hasCurrentValue = true,
+    });
+
+    builder.node({
+        .id = "showOrientationGuides",
+        .key = "showOrientationGuides",
+        .category = "motion",
+        .title = "Directional Guide",
+        .description = "Orientation cue on directional blocks (stairs, observers, pillars, doors).",
+        .section = "Appearance",
+        .type = pl::modmenu::ConfigControlTypeV2::Toggle,
+        .defaultValue = boolStr(def.showOrientationGuides),
+        .currentValue = boolStr(cfg.showOrientationGuides),
+        .hasCurrentValue = true,
+    });
+
+    builder.node({
+        .id = "subtleBreathingPulse",
+        .key = "subtleBreathingPulse",
+        .category = "motion",
+        .title = "Subtle Breathing Pulse",
+        .description = "Gentle opacity pulse while aiming at a target surface.",
+        .section = "Appearance",
+        .type = pl::modmenu::ConfigControlTypeV2::Toggle,
+        .defaultValue = boolStr(def.subtleBreathingPulse),
+        .currentValue = boolStr(cfg.subtleBreathingPulse),
+        .hasCurrentValue = true,
+    });
+
+    builder.node({
+        .id = "hideOnInteractiveWithoutSneak",
+        .key = "hideOnInteractiveWithoutSneak",
+        .category = "motion",
+        .title = "Hide on Chests / Tables Unless Sneaking",
+        .description = "Hide preview when aiming at chests, crafting tables, or furnaces while standing.",
+        .section = "Behavior",
+        .type = pl::modmenu::ConfigControlTypeV2::Toggle,
+        .defaultValue = boolStr(def.hideOnInteractiveWithoutSneak),
+        .currentValue = boolStr(cfg.hideOnInteractiveWithoutSneak),
+        .hasCurrentValue = true,
+    });
+
+    builder.node({
+        .id = "resetDefaults",
+        .key = "resetDefaults",
+        .category = "motion",
+        .title = "Reset All Settings to Defaults",
+        .description = "Restore default preset, render style, color, animation, and opacity settings.",
+        .section = "Maintenance",
+        .type = pl::modmenu::ConfigControlTypeV2::Button,
+        .actionValue = "true",
+    });
+
+    return builder.toJson();
 }
 
 } // namespace
@@ -35,13 +253,7 @@ std::string boolStr(bool v) {
 bool registerMenu(std::string_view ownerModId) {
     const ModConfig cfg = ConfigManager::instance().snapshot();
 
-    // Register directly via Preloader's native ModuleBuilder (without overriding via V2 schema) so:
-    //   1. `ConfigType::Color` renders inline on the module page with the live color preview swatch
-    //      and direct A / R / G / B sliders side-by-side.
-    //   2. Every entry initializes from the saved `placepreview.json` values (`cfg.*`) and updates
-    //      `mod.configs[i].current_value` in Preloader + `placepreview.json` on disk immediately,
-    //      persisting reliably across closing/reopening Mod Menu AND restarting the game.
-    pl::modmenu::ModuleBuilder builder(kModuleId, std::string(version::Name));
+    pl::modmenu::ModuleBuilder builder{kModuleId, std::string(version::Name)};
     builder.description(std::string(version::Description))
         .modId(ownerModId.empty() ? std::string(version::Id) : std::string(ownerModId))
         .defaultEnabled(cfg.enabled)
@@ -51,82 +263,31 @@ bool registerMenu(std::string_view ownerModId) {
         })
         .onConfigChanged([](std::string_view, std::string_view key, std::string_view value) {
             ConfigManager::instance().applyKeyValue(key, value);
+            if (key == "resetDefaults") {
+                pl::modmenu::setModuleEnabled(kModuleId, ConfigManager::instance().snapshot().enabled);
+            }
+            // Always synchronize Schema V2 JSON `current_value`s on EVERY change so closing
+            // and reopening Mod Menu NEVER reverts any slider, color, preset, or toggle!
+            refreshSchema();
         });
 
-    builder.config(
-        "previewColor",
-        "Preview Color",
-        pl::modmenu::ConfigType::Color,
-        cfg.previewColorHex());
-
-    builder.config(
-        "colorMode",
-        "Color Mode",
-        pl::modmenu::ConfigType::Radio,
-        cfg.colorMode,
-        "Custom Color,Material Adaptive");
-
-    builder.config(
-        "renderMode",
-        "Render Style",
-        pl::modmenu::ConfigType::Radio,
-        cfg.renderMode,
-        "Shaded + Wireframe,Wireframe Only,Translucent Fill");
-
-    builder.config(
-        "fillOpacity",
-        "Fill Opacity",
-        pl::modmenu::ConfigType::SliderFloat,
-        fmtFloat(cfg.fillOpacity),
-        "0.00",
-        "0.90");
-
-    builder.config(
-        "wireframeOpacity",
-        "Outline Opacity",
-        pl::modmenu::ConfigType::SliderFloat,
-        fmtFloat(cfg.wireframeOpacity),
-        "0.05",
-        "1.00");
-
-    builder.config(
-        "smoothAnimation",
-        "Smooth Transition",
-        pl::modmenu::ConfigType::Toggle,
-        boolStr(cfg.smoothAnimation));
-
-    builder.config(
-        "animationSpeed",
-        "Transition Speed",
-        pl::modmenu::ConfigType::SliderFloat,
-        fmtFloat(cfg.animationSpeed),
-        "4.00",
-        "40.00",
-        "smoothAnimation");
-
-    builder.config(
-        "directionalShading",
-        "3D Surface Shading",
-        pl::modmenu::ConfigType::Toggle,
-        boolStr(cfg.directionalShading));
-
-    builder.config(
-        "showOrientationGuides",
-        "Directional Guide",
-        pl::modmenu::ConfigType::Toggle,
-        boolStr(cfg.showOrientationGuides));
-
-    builder.config(
-        "subtleBreathingPulse",
-        "Breathing Pulse",
-        pl::modmenu::ConfigType::Toggle,
-        boolStr(cfg.subtleBreathingPulse));
-
-    builder.config(
-        "hideOnInteractiveWithoutSneak",
-        "Hide on Chests Unless Sneaking",
-        pl::modmenu::ConfigType::Toggle,
-        boolStr(cfg.hideOnInteractiveWithoutSneak));
+    builder
+        .config("preset", "Quick Preset", pl::modmenu::ConfigType::Radio, cfg.preset,
+                "Frosted White,Classic Cyan,Material Adaptive,Crisp Wireframe,Subtle Minimal,High Contrast,Custom")
+        .config("renderMode", "Render Style", pl::modmenu::ConfigType::Radio, cfg.renderMode,
+                "Shaded + Wireframe,Wireframe Only,Translucent Fill")
+        .config("colorMode", "Color Source", pl::modmenu::ConfigType::Radio, cfg.colorMode,
+                "Custom Color,Material Adaptive")
+        .config("previewColor", "Preview Color", pl::modmenu::ConfigType::Color, cfg.previewColorHex())
+        .config("fillOpacity", "Fill Opacity", pl::modmenu::ConfigType::SliderFloat, fmtFloat(cfg.fillOpacity), "0.00", "1.00")
+        .config("wireframeOpacity", "Outline Opacity", pl::modmenu::ConfigType::SliderFloat, fmtFloat(cfg.wireframeOpacity), "0.00", "1.00")
+        .config("smoothAnimation", "Smooth Block Transition", pl::modmenu::ConfigType::Toggle, boolStr(cfg.smoothAnimation))
+        .config("animationSpeed", "Transition Speed", pl::modmenu::ConfigType::SliderFloat, fmtFloat(cfg.animationSpeed), "4.00", "40.00", "smoothAnimation")
+        .config("directionalShading", "3D Surface Shading", pl::modmenu::ConfigType::Toggle, boolStr(cfg.directionalShading))
+        .config("showOrientationGuides", "Directional Guide", pl::modmenu::ConfigType::Toggle, boolStr(cfg.showOrientationGuides))
+        .config("subtleBreathingPulse", "Subtle Breathing Pulse", pl::modmenu::ConfigType::Toggle, boolStr(cfg.subtleBreathingPulse))
+        .config("hideOnInteractiveWithoutSneak", "Hide on Chests / Tables Unless Sneaking", pl::modmenu::ConfigType::Toggle, boolStr(cfg.hideOnInteractiveWithoutSneak))
+        .config("resetDefaults", "Reset All Settings to Defaults", pl::modmenu::ConfigType::Button, "true");
 
     if (!builder.registerModule()) {
         uiLog().warn("Failed to register ModMenu module '{}'", kModuleId);
@@ -134,14 +295,17 @@ bool registerMenu(std::string_view ownerModId) {
     }
 
     pl::modmenu::setModuleEnabled(kModuleId, cfg.enabled);
+    refreshSchema();
     return true;
 }
 
 void refreshSchema() {
-    // Module controls use Preloader's persistent in-memory `current_value` table directly.
+    const ModConfig cfg = ConfigManager::instance().snapshot();
+    pl::modmenu::setConfigSchemaJson(kModuleId, buildSchemaJson(cfg));
 }
 
 void unregisterMenu() {
+    pl::modmenu::clearConfigSchema(kModuleId);
     pl::modmenu::unregisterModule(kModuleId);
 }
 

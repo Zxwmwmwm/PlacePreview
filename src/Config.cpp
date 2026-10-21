@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cctype>
 #include <charconv>
+#include <cmath>
 #include <cstdlib>
 #include <fstream>
 #include <iomanip>
@@ -88,8 +89,51 @@ int hexNibble(char c) noexcept {
     return -1;
 }
 
+bool writeTextFileRobust(const std::filesystem::path& path, const std::string& data) {
+    if (path.empty()) return false;
+    std::error_code ec;
+    if (path.has_parent_path()) {
+        std::filesystem::create_directories(path.parent_path(), ec);
+    }
+
+    const std::filesystem::path tmpPath = path.string() + ".tmp";
+    {
+        std::ofstream ofs(tmpPath, std::ios::out | std::ios::binary | std::ios::trunc);
+        if (ofs.is_open()) {
+            ofs.write(data.data(), static_cast<std::streamsize>(data.size()));
+            ofs.flush();
+            if (ofs.good()) {
+                ofs.close();
+                ec.clear();
+                std::filesystem::rename(tmpPath, path, ec);
+                if (!ec) {
+                    return true;
+                }
+                // Android FUSE / Scoped Storage fallback when rename over existing file fails:
+                ec.clear();
+                std::filesystem::copy_file(
+                    tmpPath, path, std::filesystem::copy_options::overwrite_existing, ec);
+                std::error_code rmEc;
+                std::filesystem::remove(tmpPath, rmEc);
+                if (!ec) {
+                    return true;
+                }
+            }
+        }
+    }
+
+    // Final direct write fallback if temporary file creation/copy fails on restricted storage:
+    std::error_code rmEc;
+    std::filesystem::remove(tmpPath, rmEc);
+    std::ofstream directOfs(path, std::ios::out | std::ios::binary | std::ios::trunc);
+    if (!directOfs.is_open()) return false;
+    directOfs.write(data.data(), static_cast<std::streamsize>(data.size()));
+    directOfs.flush();
+    return directOfs.good();
+}
+
 void applyPresetUnlocked(ModConfig& cfg, std::string_view presetName) {
-    if (presetName == "Frosted White") {
+    if (presetName == "Frosted White" || presetName == "0") {
         cfg.preset = "Frosted White";
         cfg.renderMode = "Shaded + Wireframe";
         cfg.colorMode = "Custom Color";
@@ -100,7 +144,7 @@ void applyPresetUnlocked(ModConfig& cfg, std::string_view presetName) {
         cfg.accentBlue = 255;
         cfg.accentAlpha = 255;
         cfg.directionalShading = true;
-    } else if (presetName == "Classic Cyan") {
+    } else if (presetName == "Classic Cyan" || presetName == "1") {
         cfg.preset = "Classic Cyan";
         cfg.renderMode = "Shaded + Wireframe";
         cfg.colorMode = "Custom Color";
@@ -111,44 +155,52 @@ void applyPresetUnlocked(ModConfig& cfg, std::string_view presetName) {
         cfg.accentBlue = 255;
         cfg.accentAlpha = 255;
         cfg.directionalShading = true;
-    } else if (presetName == "Material Adaptive") {
+    } else if (presetName == "Material Adaptive" || presetName == "2") {
         cfg.preset = "Material Adaptive";
         cfg.renderMode = "Shaded + Wireframe";
         cfg.colorMode = "Material Adaptive";
-        cfg.fillOpacity = 0.36f;
-        cfg.wireframeOpacity = 0.80f;
+        cfg.fillOpacity = 0.38f;
+        cfg.wireframeOpacity = 0.85f;
         cfg.accentAlpha = 255;
         cfg.directionalShading = true;
-    } else if (presetName == "Crisp Wireframe") {
+    } else if (presetName == "Crisp Wireframe" || presetName == "3") {
         cfg.preset = "Crisp Wireframe";
         cfg.renderMode = "Wireframe Only";
         cfg.colorMode = "Custom Color";
-        cfg.fillOpacity = 0.0f;
-        cfg.wireframeOpacity = 0.90f;
+        // Preserve non-zero fillOpacity so switching Render Style back to Shaded/Translucent Fill
+        // is immediately visible without manual slider recovery.
+        if (cfg.fillOpacity < 0.10f) {
+            cfg.fillOpacity = 0.34f;
+        }
+        cfg.wireframeOpacity = 0.92f;
         cfg.accentRed = 255;
         cfg.accentGreen = 255;
         cfg.accentBlue = 255;
         cfg.accentAlpha = 255;
-    } else if (presetName == "Subtle Minimal") {
+    } else if (presetName == "Subtle Minimal" || presetName == "4") {
         cfg.preset = "Subtle Minimal";
         cfg.renderMode = "Shaded + Wireframe";
         cfg.colorMode = "Custom Color";
-        cfg.fillOpacity = 0.18f;
-        cfg.wireframeOpacity = 0.48f;
+        cfg.fillOpacity = 0.16f;
+        cfg.wireframeOpacity = 0.42f;
         cfg.accentRed = 235;
         cfg.accentGreen = 245;
         cfg.accentBlue = 255;
         cfg.accentAlpha = 255;
-    } else if (presetName == "High Contrast") {
+        cfg.directionalShading = true;
+    } else if (presetName == "High Contrast" || presetName == "5") {
         cfg.preset = "High Contrast";
         cfg.renderMode = "Shaded + Wireframe";
         cfg.colorMode = "Custom Color";
-        cfg.fillOpacity = 0.45f;
+        cfg.fillOpacity = 0.48f;
         cfg.wireframeOpacity = 1.00f;
         cfg.accentRed = 255;
         cfg.accentGreen = 212;
         cfg.accentBlue = 59;
         cfg.accentAlpha = 255;
+        cfg.directionalShading = true;
+    } else if (presetName == "Custom" || presetName == "6") {
+        cfg.preset = "Custom";
     }
 }
 
@@ -268,27 +320,50 @@ void ConfigManager::applyKeyValue(std::string_view key, std::string_view value) 
             mConfig.preset = "Custom";
         }
     } else if (key == "renderMode") {
-        if (value == "Shaded + Wireframe" || value == "Wireframe Only" || value == "Translucent Fill") {
-            mConfig.renderMode = std::string(value);
+        if (value == "Shaded + Wireframe" || value == "0") {
+            mConfig.renderMode = "Shaded + Wireframe";
+            if (mConfig.fillOpacity < 0.05f) mConfig.fillOpacity = 0.34f;
+            if (mConfig.wireframeOpacity < 0.05f) mConfig.wireframeOpacity = 0.72f;
+            mConfig.preset = "Custom";
+        } else if (value == "Wireframe Only" || value == "1") {
+            mConfig.renderMode = "Wireframe Only";
+            if (mConfig.wireframeOpacity < 0.05f) mConfig.wireframeOpacity = 0.85f;
+            mConfig.preset = "Custom";
+        } else if (value == "Translucent Fill" || value == "2") {
+            mConfig.renderMode = "Translucent Fill";
+            if (mConfig.fillOpacity < 0.05f) mConfig.fillOpacity = 0.38f;
+            mConfig.preset = "Custom";
         }
     } else if (key == "colorMode") {
-        if (value == "Material Adaptive") {
+        if (value == "Material Adaptive" || value == "1") {
             mConfig.colorMode = "Material Adaptive";
-        } else if (value == "Custom Color" || value == "Custom Accent") {
+            mConfig.preset = "Custom";
+        } else if (value == "Custom Color" || value == "Custom Accent" ||
+                   value == "Preview Color" || value == "0") {
             mConfig.colorMode = "Custom Color";
+            mConfig.preset = "Custom";
         }
     } else if (key == "fillOpacity") {
         mConfig.fillOpacity = parseFloatToken(value, mConfig.fillOpacity, 0.0f, 1.0f);
+        mConfig.preset = "Custom";
     } else if (key == "wireframeOpacity") {
-        mConfig.wireframeOpacity = parseFloatToken(value, mConfig.wireframeOpacity, 0.05f, 1.0f);
+        mConfig.wireframeOpacity = parseFloatToken(value, mConfig.wireframeOpacity, 0.0f, 1.0f);
+        mConfig.preset = "Custom";
     } else if (key == "accentRed") {
         mConfig.accentRed = parseIntToken(value, mConfig.accentRed, 0, 255);
+        mConfig.colorMode = "Custom Color";
+        mConfig.preset = "Custom";
     } else if (key == "accentGreen") {
         mConfig.accentGreen = parseIntToken(value, mConfig.accentGreen, 0, 255);
+        mConfig.colorMode = "Custom Color";
+        mConfig.preset = "Custom";
     } else if (key == "accentBlue") {
         mConfig.accentBlue = parseIntToken(value, mConfig.accentBlue, 0, 255);
+        mConfig.colorMode = "Custom Color";
+        mConfig.preset = "Custom";
     } else if (key == "accentAlpha") {
         mConfig.accentAlpha = parseIntToken(value, mConfig.accentAlpha, 0, 255);
+        mConfig.preset = "Custom";
     } else if (key == "smoothAnimation") {
         mConfig.smoothAnimation = parseBoolToken(value, mConfig.smoothAnimation);
     } else if (key == "animationSpeed") {
@@ -348,7 +423,7 @@ ModConfig ConfigManager::parseJson(std::string_view jsonText) {
         cfg.colorMode = (tok == "Material Adaptive") ? "Material Adaptive" : "Custom Color";
     }
     if (extractRawField(jsonText, "fillOpacity", tok)) cfg.fillOpacity = parseFloatToken(tok, cfg.fillOpacity, 0.0f, 1.0f);
-    if (extractRawField(jsonText, "wireframeOpacity", tok)) cfg.wireframeOpacity = parseFloatToken(tok, cfg.wireframeOpacity, 0.05f, 1.0f);
+    if (extractRawField(jsonText, "wireframeOpacity", tok)) cfg.wireframeOpacity = parseFloatToken(tok, cfg.wireframeOpacity, 0.0f, 1.0f);
     if (extractRawField(jsonText, "accentRed", tok)) cfg.accentRed = parseIntToken(tok, cfg.accentRed, 0, 255);
     if (extractRawField(jsonText, "accentGreen", tok)) cfg.accentGreen = parseIntToken(tok, cfg.accentGreen, 0, 255);
     if (extractRawField(jsonText, "accentBlue", tok)) cfg.accentBlue = parseIntToken(tok, cfg.accentBlue, 0, 255);
@@ -394,39 +469,12 @@ bool ConfigManager::saveToFile(const std::filesystem::path& path) const {
         std::lock_guard<std::mutex> lock(mMutex);
         copy = mConfig;
     }
-    std::error_code ec;
-    if (path.has_parent_path()) {
-        std::filesystem::create_directories(path.parent_path(), ec);
-    }
-    const std::filesystem::path tmpPath = path.string() + ".tmp";
-    {
-        std::ofstream ofs(tmpPath, std::ios::out | std::ios::binary | std::ios::trunc);
-        if (!ofs.is_open()) return false;
-        const std::string data = serializeJson(copy);
-        ofs.write(data.data(), static_cast<std::streamsize>(data.size()));
-        ofs.flush();
-        if (!ofs.good()) return false;
-    }
-    std::filesystem::rename(tmpPath, path, ec);
-    return !ec;
+    return writeTextFileRobust(path, serializeJson(copy));
 }
 
 void ConfigManager::saveLocked() const {
     if (mFilePath.empty()) return;
-    std::error_code ec;
-    if (mFilePath.has_parent_path()) {
-        std::filesystem::create_directories(mFilePath.parent_path(), ec);
-    }
-    const std::filesystem::path tmpPath = mFilePath.string() + ".tmp";
-    {
-        std::ofstream ofs(tmpPath, std::ios::out | std::ios::binary | std::ios::trunc);
-        if (!ofs.is_open()) return;
-        const std::string data = serializeJson(mConfig);
-        ofs.write(data.data(), static_cast<std::streamsize>(data.size()));
-        ofs.flush();
-        if (!ofs.good()) return;
-    }
-    std::filesystem::rename(tmpPath, mFilePath, ec);
+    (void)writeTextFileRobust(mFilePath, serializeJson(mConfig));
 }
 
 } // namespace placepreview
